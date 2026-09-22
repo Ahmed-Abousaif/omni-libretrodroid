@@ -29,8 +29,36 @@ namespace libretrodroid {
 int16_t Input::getInputState(unsigned port, unsigned device, unsigned index, unsigned id) {
     if (port >= 4 || port < 0) return 0;
 
-    switch (device) {
+    unsigned deviceType = device & RETRO_DEVICE_MASK;
+
+    switch (deviceType) {
         case RETRO_DEVICE_JOYPAD: {
+            if (id == RETRO_DEVICE_ID_JOYPAD_MASK) {
+                int16_t mask = 0;
+                if (pads[port].dpadXAxis == -1 || anyPressed(port, RETRO_DEVICE_ID_JOYPAD_LEFT, Input::RETRO_DEVICE_ID_JOYPAD_DOWN_LEFT, Input::RETRO_DEVICE_ID_JOYPAD_UP_LEFT)) {
+                    mask |= (1 << RETRO_DEVICE_ID_JOYPAD_LEFT);
+                }
+                if (pads[port].dpadXAxis == 1 || anyPressed(port, RETRO_DEVICE_ID_JOYPAD_RIGHT, Input::RETRO_DEVICE_ID_JOYPAD_UP_RIGHT, Input::RETRO_DEVICE_ID_JOYPAD_DOWN_RIGHT)) {
+                    mask |= (1 << RETRO_DEVICE_ID_JOYPAD_RIGHT);
+                }
+                if (pads[port].dpadYAxis == -1 || anyPressed(port, RETRO_DEVICE_ID_JOYPAD_UP, Input::RETRO_DEVICE_ID_JOYPAD_UP_LEFT, Input::RETRO_DEVICE_ID_JOYPAD_UP_RIGHT)) {
+                    mask |= (1 << RETRO_DEVICE_ID_JOYPAD_UP);
+                }
+                if (pads[port].dpadYAxis == 1 || anyPressed(port, RETRO_DEVICE_ID_JOYPAD_DOWN, Input::RETRO_DEVICE_ID_JOYPAD_DOWN_LEFT, Input::RETRO_DEVICE_ID_JOYPAD_DOWN_RIGHT)) {
+                    mask |= (1 << RETRO_DEVICE_ID_JOYPAD_DOWN);
+                }
+                for (unsigned btn = 0; btn <= RETRO_DEVICE_ID_JOYPAD_R3; ++btn) {
+                    if (btn == RETRO_DEVICE_ID_JOYPAD_LEFT || btn == RETRO_DEVICE_ID_JOYPAD_RIGHT ||
+                        btn == RETRO_DEVICE_ID_JOYPAD_UP || btn == RETRO_DEVICE_ID_JOYPAD_DOWN) {
+                        continue;
+                    }
+                    if (anyPressed(port, btn)) {
+                        mask |= (1 << btn);
+                    }
+                }
+                return mask;
+            }
+
             switch (id) {
                 case RETRO_DEVICE_ID_JOYPAD_LEFT: {
                     bool axis = pads[port].dpadXAxis == -1;
@@ -97,6 +125,8 @@ int16_t Input::getInputState(unsigned port, unsigned device, unsigned index, uns
                         default:
                             return 0;
                     }
+                case RETRO_DEVICE_INDEX_ANALOG_BUTTON:
+                    return anyPressed(port, id) ? MAX_RANGE_MOTION : 0;
                 default:
                     return 0;
             }
@@ -145,6 +175,14 @@ int Input::convertAndroidToLibretroKey(int keyCode) const {
             return RETRO_DEVICE_ID_JOYPAD_Y;
         case AKEYCODE_BUTTON_B:
             return RETRO_DEVICE_ID_JOYPAD_B;
+        case AKEYCODE_BUTTON_C:
+            return RETRO_DEVICE_ID_JOYPAD_X;
+        case AKEYCODE_BUTTON_Z:
+            return RETRO_DEVICE_ID_JOYPAD_Y;
+        case AKEYCODE_BUTTON_1:
+            return RETRO_DEVICE_ID_JOYPAD_START;
+        case AKEYCODE_BUTTON_2:
+            return RETRO_DEVICE_ID_JOYPAD_SELECT;
         case AKEYCODE_BUTTON_L1:
             return RETRO_DEVICE_ID_JOYPAD_L;
         case AKEYCODE_BUTTON_L2:

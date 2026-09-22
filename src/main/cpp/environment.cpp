@@ -112,6 +112,13 @@ bool Environment::environment_handle_set_variables(const struct retro_variable* 
 bool Environment::environment_handle_get_variable(struct retro_variable* requested) {
     if (!requested || !requested->key) return false;
     LOGI("Variable requested: %s", requested->key);
+
+    if (strcmp(requested->key, "dolphin_renderer") == 0) {
+        requested->value = "Hardware";
+        LOGI("Variable dolphin_renderer: 'Hardware' (forced)");
+        return true;
+    }
+
     auto foundVariable = variables.find(std::string(requested->key));
 
     if (foundVariable == variables.end()) {
@@ -424,6 +431,191 @@ bool Environment::handle_callback_environment(unsigned cmd, void *data) {
         case RETRO_ENVIRONMENT_GET_VFS_INTERFACE:
             LOGI("Called RETRO_ENVIRONMENT_GET_VFS_INTERFACE");
             return environment_handle_get_vfs_interface(static_cast<struct retro_vfs_interface_info*>(data));
+
+        case RETRO_ENVIRONMENT_SET_CORE_OPTIONS: {
+            LOGI("Called RETRO_ENVIRONMENT_SET_CORE_OPTIONS");
+            const auto* options = static_cast<const struct retro_core_option_definition*>(data);
+            if (!options) return false;
+            unsigned i = 0;
+            while (options[i].key != nullptr) {
+                std::string key = options[i].key;
+                std::string desc = options[i].desc ? options[i].desc : "";
+                std::string defVal = options[i].default_value ? options[i].default_value : (options[i].values[0].value ? options[i].values[0].value : "");
+
+                if (options[i].values[0].value != nullptr) {
+                    desc += "; ";
+                    unsigned v = 0;
+                    while (options[i].values[v].value != nullptr) {
+                        if (v > 0) desc += "|";
+                        desc += options[i].values[v].value;
+                        v++;
+                    }
+                }
+
+                auto currentVariable = variables[key];
+                currentVariable.key = key;
+                currentVariable.description = desc;
+                if (currentVariable.value.empty()) {
+                    currentVariable.value = defVal;
+                }
+                variables[key] = currentVariable;
+                i++;
+            }
+            return true;
+        }
+
+        case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL: {
+            LOGI("Called RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL");
+            const auto* intl = static_cast<const struct retro_core_options_intl*>(data);
+            if (!intl || !intl->us) return false;
+            const auto* options = intl->us;
+            unsigned i = 0;
+            while (options[i].key != nullptr) {
+                std::string key = options[i].key;
+                std::string desc = options[i].desc ? options[i].desc : "";
+                std::string defVal = options[i].default_value ? options[i].default_value : (options[i].values[0].value ? options[i].values[0].value : "");
+
+                if (options[i].values[0].value != nullptr) {
+                    desc += "; ";
+                    unsigned v = 0;
+                    while (options[i].values[v].value != nullptr) {
+                        if (v > 0) desc += "|";
+                        desc += options[i].values[v].value;
+                        v++;
+                    }
+                }
+
+                auto currentVariable = variables[key];
+                currentVariable.key = key;
+                currentVariable.description = desc;
+                if (currentVariable.value.empty()) {
+                    currentVariable.value = defVal;
+                }
+                variables[key] = currentVariable;
+                i++;
+            }
+            return true;
+        }
+
+        case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY:
+            return true;
+
+        case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2: {
+            LOGI("Called RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2");
+            const auto* options_v2 = static_cast<const struct retro_core_options_v2*>(data);
+            if (!options_v2 || !options_v2->definitions) return false;
+            const auto* defs = options_v2->definitions;
+            unsigned i = 0;
+            while (defs[i].key != nullptr) {
+                std::string key = defs[i].key;
+                std::string desc = defs[i].desc ? defs[i].desc : "";
+                std::string defVal = defs[i].default_value ? defs[i].default_value : (defs[i].values[0].value ? defs[i].values[0].value : "");
+
+                if (defs[i].values[0].value != nullptr) {
+                    desc += "; ";
+                    unsigned v = 0;
+                    while (defs[i].values[v].value != nullptr) {
+                        if (v > 0) desc += "|";
+                        desc += defs[i].values[v].value;
+                        v++;
+                    }
+                }
+
+                auto currentVariable = variables[key];
+                currentVariable.key = key;
+                currentVariable.description = desc;
+                if (currentVariable.value.empty()) {
+                    currentVariable.value = defVal;
+                }
+                variables[key] = currentVariable;
+                i++;
+            }
+            return true;
+        }
+
+        case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2_INTL: {
+            LOGI("Called RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2_INTL");
+            const auto* intl_v2 = static_cast<const struct retro_core_options_v2_intl*>(data);
+            if (!intl_v2 || !intl_v2->us || !intl_v2->us->definitions) return false;
+            const auto* defs = intl_v2->us->definitions;
+            unsigned i = 0;
+            while (defs[i].key != nullptr) {
+                std::string key = defs[i].key;
+                std::string desc = defs[i].desc ? defs[i].desc : "";
+                std::string defVal = defs[i].default_value ? defs[i].default_value : (defs[i].values[0].value ? defs[i].values[0].value : "");
+
+                if (defs[i].values[0].value != nullptr) {
+                    desc += "; ";
+                    unsigned v = 0;
+                    while (defs[i].values[v].value != nullptr) {
+                        if (v > 0) desc += "|";
+                        desc += defs[i].values[v].value;
+                        v++;
+                    }
+                }
+
+                auto currentVariable = variables[key];
+                currentVariable.key = key;
+                currentVariable.description = desc;
+                if (currentVariable.value.empty()) {
+                    currentVariable.value = defVal;
+                }
+                variables[key] = currentVariable;
+                i++;
+            }
+            return true;
+        }
+
+        case RETRO_ENVIRONMENT_GET_DISK_CONTROL_INTERFACE_VERSION: {
+            LOGI("Called RETRO_ENVIRONMENT_GET_DISK_CONTROL_INTERFACE_VERSION");
+            if (data) {
+                *((unsigned*) data) = 1;
+            }
+            return true;
+        }
+
+        case RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE: {
+            LOGI("Called RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE");
+            retro_disk_control_callback = (struct retro_disk_control_callback*) data;
+            return true;
+        }
+
+        case RETRO_ENVIRONMENT_GET_CORE_ASSETS_DIRECTORY:
+            LOGI("Called RETRO_ENVIRONMENT_GET_CORE_ASSETS_DIRECTORY");
+            *(const char**) data = systemDirectory.c_str();
+            return !systemDirectory.empty();
+
+        case RETRO_ENVIRONMENT_GET_INPUT_MAX_USERS:
+            LOGI("Called RETRO_ENVIRONMENT_GET_INPUT_MAX_USERS");
+            if (data) {
+                *((unsigned*) data) = 4;
+            }
+            return true;
+
+        case RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE:
+            LOGI("Called RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE");
+            return true;
+
+        case RETRO_ENVIRONMENT_GET_FASTFORWARDING:
+            LOGI("Called RETRO_ENVIRONMENT_GET_FASTFORWARDING");
+            if (data) {
+                *((bool*) data) = false;
+            }
+            return true;
+
+        case RETRO_ENVIRONMENT_GET_TARGET_REFRESH_RATE:
+            LOGI("Called RETRO_ENVIRONMENT_GET_TARGET_REFRESH_RATE");
+            if (data) {
+                *((float*) data) = 60.0f;
+            }
+            return true;
+
+        case RETRO_ENVIRONMENT_GET_INPUT_BITMASKS:
+            LOGI("Called RETRO_ENVIRONMENT_GET_INPUT_BITMASKS");
+            if (data) {
+                *((bool*) data) = true;
+            }
+            return true;
 
         case RETRO_ENVIRONMENT_GET_MICROPHONE_INTERFACE:
             LOGI("Called RETRO_ENVIRONMENT_GET_MICROPHONE_INTERFACE");

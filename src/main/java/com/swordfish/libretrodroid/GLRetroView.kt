@@ -162,7 +162,7 @@ class GLRetroView(
         return PointF(x, y)
     }
 
-    fun serializeState(useEmulationThread: Boolean = true): ByteArray {
+    fun serializeState(useEmulationThread: Boolean = true): ByteArray? {
         return runOnEmulationThread(useEmulationThread) {
             LibretroDroid.serializeState()
         }
@@ -180,7 +180,7 @@ class GLRetroView(
         }
     }
 
-    fun serializeSRAM(useEmulationThread: Boolean = true): ByteArray {
+    fun serializeSRAM(useEmulationThread: Boolean = true): ByteArray? {
         return runOnEmulationThread(useEmulationThread) {
             LibretroDroid.serializeSRAM()
         }
@@ -399,12 +399,16 @@ class GLRetroView(
         val latch = CountDownLatch(1)
         var result: T? = null
         queueEvent {
-            result = block()
-            latch.countDown()
+            try {
+                result = block()
+            } finally {
+                latch.countDown()
+            }
         }
 
         latch.awaitUninterruptibly()
-        return result!!
+        @Suppress("UNCHECKED_CAST")
+        return result as T
     }
 
     private fun buildShader(config: ShaderConfig): GLRetroShader {

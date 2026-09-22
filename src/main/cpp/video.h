@@ -18,7 +18,8 @@
 #ifndef LIBRETRODROID_VIDEO_H
 #define LIBRETRODROID_VIDEO_H
 
-#include <GLES2/gl2.h>
+#include <GLES3/gl3.h>
+#include <GLES3/gl3ext.h>
 #include <optional>
 #include <array>
 
@@ -64,6 +65,7 @@ public:
         ImmersiveMode::Config immersiveModeConfig,
         unsigned int viewportAlignment
     );
+    ~Video();
 
     VideoLayout& getLayout() { return videoLayout; }
 
@@ -112,6 +114,10 @@ private:
     VideoLayout videoLayout;
 
     Renderer* renderer;
+
+    GLuint vao = 0;
+    GLuint vboPosition = 0;
+    GLuint vboCoordinate = 0;
 };
 
 }

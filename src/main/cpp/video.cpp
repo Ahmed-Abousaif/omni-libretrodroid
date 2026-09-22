@@ -15,7 +15,8 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#include <GLES2/gl2.h>
+#include <GLES3/gl3.h>
+#include <GLES3/gl3ext.h>
 #include <EGL/egl.h>
 #include <cstdlib>
 #include <string>
@@ -141,7 +142,51 @@ void Video::renderFrame() {
     if (skipDuplicateFrames && !isDirty) return;
     isDirty = false;
 
+    // Save previous OpenGL state to protect against cores (like Dolphin) that maintain active context state
+    GLint prevFbo = 0;
+    GLint prevVao = 0;
+    GLint prevVbo = 0;
+    GLint prevEbo = 0;
+    GLint prevProg = 0;
+    GLint prevActiveTex = 0;
+    GLint prevTex2D = 0;
+    GLboolean prevDepthTest = glIsEnabled(GL_DEPTH_TEST);
+    GLboolean prevStencilTest = glIsEnabled(GL_STENCIL_TEST);
+    GLboolean prevScissorTest = glIsEnabled(GL_SCISSOR_TEST);
+    GLboolean prevCullFace = glIsEnabled(GL_CULL_FACE);
+    GLboolean prevBlend = glIsEnabled(GL_BLEND);
+    GLboolean prevDither = glIsEnabled(GL_DITHER);
+    GLint prevViewport[4];
+    GLboolean prevColorMask[4];
+    GLboolean prevDepthMask = GL_TRUE;
+
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &prevVao);
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &prevVbo);
+    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &prevEbo);
+    glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &prevActiveTex);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTex2D);
+    glGetIntegerv(GL_VIEWPORT, prevViewport);
+    glGetBooleanv(GL_COLOR_WRITEMASK, prevColorMask);
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &prevDepthMask);
+
+    // Bind frontend VAO & configure state
+    if (vao != 0) {
+        glBindVertexArray(vao);
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
     glDisable(GL_DEPTH_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+    glDisable(GL_DITHER);
+
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDepthMask(GL_TRUE);
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
@@ -176,11 +221,15 @@ void Video::renderFrame() {
         glUseProgram(shader.gProgram);
 
         auto vertices = isLastPass ? videoLayout.getForegroundVertices() : videoLayout.getFramebufferVertices();
-        glVertexAttribPointer(shader.gvPositionHandle, 2, GL_FLOAT, GL_FALSE, 0, vertices.data());
+        glBindBuffer(GL_ARRAY_BUFFER, vboPosition);
+        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_STREAM_DRAW);
+        glVertexAttribPointer(shader.gvPositionHandle, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
         glEnableVertexAttribArray(shader.gvPositionHandle);
 
         auto coordinates = videoLayout.getTextureCoordinates();
-        glVertexAttribPointer(shader.gvCoordinateHandle, 2, GL_FLOAT, GL_FALSE, 0, coordinates.data());
+        glBindBuffer(GL_ARRAY_BUFFER, vboCoordinate);
+        glBufferData(GL_ARRAY_BUFFER, coordinates.size() * sizeof(float), coordinates.data(), GL_STREAM_DRAW);
+        glVertexAttribPointer(shader.gvCoordinateHandle, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
         glEnableVertexAttribArray(shader.gvCoordinateHandle);
 
         glActiveTexture(GL_TEXTURE0);
@@ -211,6 +260,30 @@ void Video::renderFrame() {
 
         glUseProgram(0);
     }
+
+    // Restore previous OpenGL state
+    if (prevVao != 0) {
+        glBindVertexArray(prevVao);
+    } else if (vao != 0) {
+        glBindVertexArray(0);
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, prevVbo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, prevEbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
+    glUseProgram(prevProg);
+    glActiveTexture(prevActiveTex);
+    glBindTexture(GL_TEXTURE_2D, prevTex2D);
+
+    if (prevDepthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+    if (prevStencilTest) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
+    if (prevScissorTest) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+    if (prevCullFace) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+    if (prevBlend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+    if (prevDither) glEnable(GL_DITHER); else glDisable(GL_DITHER);
+
+    glColorMask(prevColorMask[0], prevColorMask[1], prevColorMask[2], prevColorMask[3]);
+    glDepthMask(prevDepthMask);
+    glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
 }
 
 float Video::getScreenDensity() {
@@ -278,11 +351,22 @@ Video::Video(
 
     LOGI("Initializing graphics");
 
+    glGenVertexArrays(1, &vao);
+    glGenBuffers(1, &vboPosition);
+    glGenBuffers(1, &vboCoordinate);
+
     glViewport(0, 0, videoLayout.getScreenWidth(), videoLayout.getScreenHeight());
 
     glUseProgram(0);
 
     initializeRenderer(renderingOptions);
+}
+
+Video::~Video() {
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vboPosition) glDeleteBuffers(1, &vboPosition);
+    if (vboCoordinate) glDeleteBuffers(1, &vboCoordinate);
+    delete renderer;
 }
 
 void Video::updateShaderType(ShaderManager::Config shaderConfig) {

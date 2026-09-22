@@ -199,9 +199,15 @@ JNIEXPORT jbyteArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_seri
 ) {
     try {
         auto [data, size] = LibretroDroid::getInstance().serializeState();
+        if (data == nullptr || size == 0) {
+            return nullptr;
+        }
 
         jbyteArray result = env->NewByteArray(size);
-        env->SetByteArrayRegion(result, 0, size, data);
+        if (result != nullptr) {
+            env->SetByteArrayRegion(result, 0, size, data);
+        }
+        delete[] data;
 
         return result;
 
@@ -246,22 +252,24 @@ JNIEXPORT jboolean JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_unseri
     jclass obj,
     jbyteArray sram
 ) {
+    if (sram == nullptr) {
+        return JNI_TRUE;
+    }
     try {
         jboolean isCopy = JNI_FALSE;
         jbyte* data = env->GetByteArrayElements(sram, &isCopy);
         jsize size = env->GetArrayLength(sram);
 
-        LibretroDroid::getInstance().unserializeSRAM(data, size);
+        jboolean result = LibretroDroid::getInstance().unserializeSRAM(data, size);
 
         env->ReleaseByteArrayElements(sram, data, JNI_ABORT);
+        return result;
 
     } catch (std::exception &exception) {
         LOGE("Error in unserializeSRAM: %s", exception.what());
         JavaUtils::throwRetroException(env, ERROR_SERIALIZATION);
         return JNI_FALSE;
     }
-
-    return JNI_TRUE;
 }
 
 JNIEXPORT jbyteArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_serializeSRAM(
@@ -270,9 +278,16 @@ JNIEXPORT jbyteArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_seri
 ) {
     try {
         auto [data, size] = LibretroDroid::getInstance().serializeSRAM();
+        if (data == nullptr || size == 0) {
+            if (data != nullptr) delete[] data;
+            return nullptr;
+        }
 
         jbyteArray result = env->NewByteArray(size);
-        env->SetByteArrayRegion(result, 0, size, (jbyte *) data);
+        if (result != nullptr) {
+            env->SetByteArrayRegion(result, 0, size, (jbyte *) data);
+        }
+        delete[] data;
 
         return result;
 

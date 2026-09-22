@@ -40,6 +40,13 @@ FramebufferRenderer::FramebufferRenderer(
 void FramebufferRenderer::onNewFrame(const void *data, unsigned width, unsigned height, size_t pitch) {
     Renderer::onNewFrame(data, width, height, pitch);
 
+    if (width > 0 && height > 0 && (this->width != width || this->height != height)) {
+        LOGI("FramebufferRenderer resolution updated from %u x %u to %u x %u", this->width, this->height, width, height);
+        this->width = width;
+        this->height = height;
+        isDirty = true;
+    }
+
     if (isDirty) {
         initializeBuffers();
         isDirty = false;

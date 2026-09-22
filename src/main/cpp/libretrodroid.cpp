@@ -152,22 +152,32 @@ void LibretroDroid::setControllerType(unsigned int port, unsigned int type) {
 bool LibretroDroid::unserializeState(int8_t *data, size_t size) {
     std::lock_guard<std::mutex> lock(coreLock);
 
-    return core->retro_unserialize(data, size);
+    if (data == nullptr || size == 0) {
+        LOGE("unserializeState received null data or 0 size");
+        return false;
+    }
+
+    bool result = core->retro_unserialize(data, size);
+    LOGI("retro_unserialize size=%zu returned %s", size, result ? "true" : "false");
+    return result;
 }
 
 JNIEXPORT jboolean JNICALL LibretroDroid::unserializeSRAM(int8_t* data, size_t size) {
     std::lock_guard<std::mutex> lock(coreLock);
 
     size_t sramSize = core->retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+    if (sramSize == 0 || size == 0) {
+        return true;
+    }
     void *sramState = core->retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
 
     if (sramState == nullptr) {
-        LOGE("Cannot load SRAM: nullptr in retro_get_memory_data");
-        return false;
+        LOGI("Cannot load SRAM: nullptr in retro_get_memory_data (core may not use SAVE_RAM)");
+        return true;
     }
 
     if (size > sramSize) {
-        LOGE("Cannot load SRAM: size mismatch");
+        LOGE("Cannot load SRAM: size mismatch (provided %zu, max %zu)", size, sramSize);
         return false;
     }
 
@@ -180,8 +190,16 @@ std::pair<int8_t*, size_t> LibretroDroid::serializeSRAM() {
     std::lock_guard<std::mutex> lock(coreLock);
 
     size_t size = core->retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+    if (size == 0) {
+        return std::pair(nullptr, 0);
+    }
+    void* sramData = core->retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+    if (sramData == nullptr) {
+        return std::pair(nullptr, 0);
+    }
+
     auto* data = new int8_t[size];
-    memcpy(data, (int8_t*) core->retro_get_memory_data(RETRO_MEMORY_SAVE_RAM), size);
+    memcpy(data, (int8_t*) sramData, size);
 
     return std::pair(data, size);
 }
@@ -259,6 +277,10 @@ void LibretroDroid::onSurfaceCreated() {
 
     if (Environment::getInstance().getHwContextReset() != nullptr) {
         Environment::getInstance().getHwContextReset()();
+    }
+
+    if (video && Environment::getInstance().isUseHwAcceleration()) {
+        glBindFramebuffer(GL_FRAMEBUFFER, video->getCurrentFramebuffer());
     }
 }
 
@@ -637,10 +659,20 @@ std::pair<int8_t*, size_t> LibretroDroid::serializeState() {
     std::lock_guard<std::mutex> lock(coreLock);
 
     size_t size = core->retro_serialize_size();
+    if (size == 0) {
+        LOGE("retro_serialize_size returned 0");
+        return std::pair(nullptr, 0);
+    }
     auto data = new int8_t[size];
 
-    core->retro_serialize(data, size);
+    bool success = core->retro_serialize(data, size);
+    if (!success) {
+        LOGE("retro_serialize failed for size %zu", size);
+        delete[] data;
+        return std::pair(nullptr, 0);
+    }
 
+    LOGI("retro_serialize succeeded with size %zu", size);
     return std::pair(data, size);
 }
 

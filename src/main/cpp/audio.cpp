@@ -82,7 +82,7 @@ int32_t Audio::computeAudioBufferSize() {
 
 double Audio::computeMaximumLatency() const {
     double maxLatency = (audioLatencySettings->bufferSizeInVideoFrames / contentRefreshRate) * 1000;
-    return std::max(maxLatency, 32.0);
+    return std::max(maxLatency, 48.0);
 }
 
 void Audio::start() {
@@ -115,7 +115,11 @@ oboe::DataCallbackResult Audio::onAudioReady(oboe::AudioStream *oboeStream, void
     int32_t currentFramesToSubmit = std::round(framesToSubmit);
     framesToSubmit -= currentFramesToSubmit;
 
-    fifoBuffer->readNow(temporaryAudioBuffer.get(), currentFramesToSubmit * 2);
+    int32_t requestedSamples = currentFramesToSubmit * 2;
+    int32_t samplesRead = fifoBuffer->readNow(temporaryAudioBuffer.get(), requestedSamples);
+    if (samplesRead < requestedSamples) {
+        std::fill(temporaryAudioBuffer.get() + std::max(0, samplesRead), temporaryAudioBuffer.get() + requestedSamples, 0);
+    }
 
     auto outputArray = reinterpret_cast<int16_t *>(audioData);
     resampler.resample(temporaryAudioBuffer.get(), currentFramesToSubmit, outputArray, numFrames);

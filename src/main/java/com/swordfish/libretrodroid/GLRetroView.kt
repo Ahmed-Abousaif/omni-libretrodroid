@@ -327,12 +327,14 @@ class GLRetroView(
 
         override fun onSurfaceChanged(gl: GL10, width: Int, height: Int) = catchExceptions {
             Thread.currentThread().priority = Thread.MAX_PRIORITY
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
             LibretroDroid.onSurfaceChanged(width, height)
         }
 
 
         override fun onSurfaceCreated(gl: GL10, config: EGLConfig) = catchExceptions {
             Thread.currentThread().priority = Thread.MAX_PRIORITY
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
             initializeCore()
             lifecycle?.coroutineScope?.launch {
                 retroGLEventsSubject.emit(GLRetroEvents.SurfaceCreated)

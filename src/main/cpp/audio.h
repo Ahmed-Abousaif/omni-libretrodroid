@@ -34,8 +34,8 @@ private:
         bool useLowLatencyStream;
     };
 
-    const AudioLatencySettings DEFAULT_LATENCY_SETTINGS { 8, false };
-    const AudioLatencySettings LOW_LATENCY_SETTINGS { 4, true };
+    const AudioLatencySettings DEFAULT_LATENCY_SETTINGS { 10, false };
+    const AudioLatencySettings LOW_LATENCY_SETTINGS { 6, true };
 
 public:
     Audio(int32_t sampleRate, double refreshRate, bool preferLowLatencyAudio);

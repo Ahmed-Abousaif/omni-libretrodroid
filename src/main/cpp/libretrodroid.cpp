@@ -16,6 +16,7 @@
  */
 
 #include <jni.h>
+#include <sys/resource.h>
 
 #include <EGL/egl.h>
 
@@ -517,6 +518,12 @@ void LibretroDroid::pause() {
 }
 
 void LibretroDroid::step() {
+    static thread_local bool s_prioritySet = false;
+    if (!s_prioritySet) {
+        setpriority(PRIO_PROCESS, 0, -16);
+        s_prioritySet = true;
+    }
+
     std::lock_guard<std::mutex> lock(coreLock);
 
     LOGD("Stepping into retro_run()");

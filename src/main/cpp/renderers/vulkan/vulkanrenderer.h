@@ -39,10 +39,8 @@ private:
     bool createSyncObjects();
 
     struct PushConstants {
-        float scaleX = 1.0f;
-        float scaleY = 1.0f;
-        float offsetX = 0.0f;
-        float offsetY = 0.0f;
+        float transform[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
+        float offset[2] = { 0.0f, 0.0f };
     };
 
 private:
@@ -53,6 +51,7 @@ private:
     Rect currentViewport = Rect(0.0f, 0.0f, 1.0f, 1.0f);
     unsigned int viewportAlignment = 0;
 
+    VkSurfaceTransformFlagBitsKHR currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     VkFormat swapchainFormat = VK_FORMAT_R8G8B8A8_UNORM;
     VkExtent2D swapchainExtent { 0, 0 };
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;

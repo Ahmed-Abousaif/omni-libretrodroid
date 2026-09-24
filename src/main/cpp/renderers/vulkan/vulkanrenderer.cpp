@@ -187,11 +187,16 @@ bool VulkanRenderer::createSwapchain() {
         colorSpace = formats[0].colorSpace;
     }
 
+    currentTransform = caps.currentTransform;
+
     if (caps.currentExtent.width != 0xFFFFFFFF && caps.currentExtent.width > 0) {
         swapchainExtent = caps.currentExtent;
     } else {
         uint32_t w = screenWidth > 0 ? screenWidth : 1920;
         uint32_t h = screenHeight > 0 ? screenHeight : 1080;
+        if (currentTransform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
+            std::swap(w, h);
+        }
         swapchainExtent.width = std::clamp(w, caps.minImageExtent.width, caps.maxImageExtent.width);
         swapchainExtent.height = std::clamp(h, caps.minImageExtent.height, caps.maxImageExtent.height);
     }
@@ -201,8 +206,8 @@ bool VulkanRenderer::createSwapchain() {
         imageCount = caps.maxImageCount;
     }
 
-    LOGI("Creating swapchain: extent %u x %u, images: %u, format: %d",
-         swapchainExtent.width, swapchainExtent.height, imageCount, swapchainFormat);
+    LOGI("Creating swapchain: extent %u x %u, transform: %d, images: %u, format: %d",
+         swapchainExtent.width, swapchainExtent.height, (int)currentTransform, imageCount, swapchainFormat);
 
     VkSwapchainCreateInfoKHR sci {};
     sci.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
@@ -214,12 +219,26 @@ bool VulkanRenderer::createSwapchain() {
     sci.imageArrayLayers = 1;
     sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    sci.preTransform = caps.currentTransform;
+    sci.preTransform = currentTransform;
+    uint32_t presentModeCount = 0;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &presentModeCount, nullptr);
+    std::vector<VkPresentModeKHR> presentModes(presentModeCount);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &presentModeCount, presentModes.data());
+
+    VkPresentModeKHR chosenPresentMode = VK_PRESENT_MODE_FIFO_KHR;
+    for (auto pm : presentModes) {
+        if (pm == VK_PRESENT_MODE_MAILBOX_KHR) {
+            chosenPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+            break;
+        }
+    }
+
     sci.compositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
     if (!(caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR)) {
         sci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     }
-    sci.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+
+    sci.presentMode = chosenPresentMode;
     sci.clipped = VK_TRUE;
 
     res = vkCreateSwapchainKHR(device, &sci, nullptr, &swapchain);
@@ -643,18 +662,13 @@ bool VulkanRenderer::renderFrame() {
         vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
     }
 
-    // Calculate display dimensions based on screen orientation
-    float displayW = static_cast<float>(swapchainExtent.width);
-    float displayH = static_cast<float>(swapchainExtent.height);
-    if (screenWidth > 0 && screenHeight > 0) {
-        if (screenWidth < screenHeight) {
-            // Portrait mode: display width is smaller dimension, height is larger
-            displayW = static_cast<float>(std::min(swapchainExtent.width, swapchainExtent.height));
-            displayH = static_cast<float>(std::max(swapchainExtent.width, swapchainExtent.height));
-        } else {
-            // Landscape mode: display width is larger dimension, height is smaller
-            displayW = static_cast<float>(std::max(swapchainExtent.width, swapchainExtent.height));
-            displayH = static_cast<float>(std::min(swapchainExtent.width, swapchainExtent.height));
+    // Calculate display dimensions in user logical space
+    float displayW = static_cast<float>(screenWidth > 0 ? screenWidth : swapchainExtent.width);
+    float displayH = static_cast<float>(screenHeight > 0 ? screenHeight : swapchainExtent.height);
+    if (screenWidth == 0 || screenHeight == 0) {
+        if (currentTransform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
+            displayW = static_cast<float>(swapchainExtent.height);
+            displayH = static_cast<float>(swapchainExtent.width);
         }
     }
 
@@ -675,27 +689,57 @@ bool VulkanRenderer::renderFrame() {
         scaleX *= (targetAspect / vpAspect);
     }
 
-    PushConstants push {};
-    push.scaleX = scaleX;
-    push.scaleY = scaleY;
-    push.offsetX = (currentViewport.getX() * 2.0f) - (1.0f - currentViewport.getWidth());
-    push.offsetY = (currentViewport.getY() * 2.0f) - (1.0f - currentViewport.getHeight());
+    float logicalOffsetX = (currentViewport.getX() * 2.0f) - (1.0f - currentViewport.getWidth());
+    float logicalOffsetY = (currentViewport.getY() * 2.0f) - (1.0f - currentViewport.getHeight());
 
     float emptyVerticalSpace = currentViewport.getHeight() - scaleY;
     if (viewportAlignment == 1 /* V_ALIGN_TOP */) {
-        push.offsetY -= emptyVerticalSpace;
+        logicalOffsetY -= emptyVerticalSpace;
     } else if (viewportAlignment == 2 /* V_ALIGN_BOTTOM */) {
-        push.offsetY += emptyVerticalSpace;
+        logicalOffsetY += emptyVerticalSpace;
     }
+
+    float cosTheta = 1.0f;
+    float sinTheta = 0.0f;
+
+    switch (currentTransform) {
+        case VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR:
+            cosTheta = 0.0f;
+            sinTheta = 1.0f;
+            break;
+        case VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR:
+            cosTheta = -1.0f;
+            sinTheta = 0.0f;
+            break;
+        case VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR:
+            cosTheta = 0.0f;
+            sinTheta = -1.0f;
+            break;
+        case VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR:
+        default:
+            cosTheta = 1.0f;
+            sinTheta = 0.0f;
+            break;
+    }
+
+    PushConstants push {};
+    // Matrix column 0 = (m00, m10), column 1 = (m01, m11)
+    push.transform[0] = scaleX * cosTheta;
+    push.transform[1] = scaleX * sinTheta;
+    push.transform[2] = -scaleY * sinTheta;
+    push.transform[3] = scaleY * cosTheta;
+
+    push.offset[0] = logicalOffsetX * cosTheta - logicalOffsetY * sinTheta;
+    push.offset[1] = logicalOffsetX * sinTheta + logicalOffsetY * cosTheta;
 
     static int frameCount = 0;
     frameCount++;
     if (frameCount <= 10 || frameCount % 60 == 0) {
-        LOGI("VulkanRenderer::renderFrame #%d: img=%p (view=%p, layout=%d), swapchain=%u x %u, push=(scale: %.3f, %.3f, off: %.3f, %.3f)",
+        LOGI("VulkanRenderer::renderFrame #%d: img=%p (view=%p, layout=%d), swapchain=%u x %u, transform=%d, scale=(%.3f, %.3f), off=(%.3f, %.3f)",
              frameCount, currentImage, currentImage ? (void*)currentImage->image_view : nullptr,
              currentImage ? currentImage->image_layout : -1,
-             swapchainExtent.width, swapchainExtent.height,
-             push.scaleX, push.scaleY, push.offsetX, push.offsetY);
+             swapchainExtent.width, swapchainExtent.height, (int)currentTransform,
+             scaleX, scaleY, logicalOffsetX, logicalOffsetY);
     }
 
     VkCommandBuffer cmd = commandBuffers[currentFrame];

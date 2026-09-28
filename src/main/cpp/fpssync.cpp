@@ -22,7 +22,7 @@
 namespace libretrodroid {
 
 unsigned FPSSync::advanceFrames() {
-    if (useVSync) return 1;
+    if (useVSync && !softwarePace) return 1;
 
     if (lastFrame == MIN_TIME) {
         start();
@@ -57,7 +57,10 @@ double FPSSync::getTimeStretchFactor() {
 }
 
 void FPSSync::wait() {
-    if (useVSync) return;
+    if (useVSync && !softwarePace) return;
+    if (lastFrame == MIN_TIME) {
+        start();
+    }
     std::this_thread::sleep_until(lastFrame);
 }
 

@@ -24,6 +24,9 @@ public:
     void updateAspectRatio(float aspectRatio);
     void updateViewport(Rect viewport);
     void updateViewportAlignment(unsigned int alignment);
+    // MAILBOX is used when FPSSync is pacing, or when present must not block the queue.
+    void setAllowMailbox(bool allow);
+    bool isUsingMailbox() const { return usingMailbox; }
 
     bool renderFrame();
 
@@ -37,6 +40,10 @@ private:
     bool createDescriptorObjects();
     bool createCommandBuffers();
     bool createSyncObjects();
+    void ensureRenderFinishedSemaphores(uint32_t count);
+    void destroyRenderFinishedSemaphores();
+    void waitQueueIdleLocked();
+    bool surfaceMismatch() const;
 
     struct PushConstants {
         float transform[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
@@ -71,10 +78,15 @@ private:
     VkCommandPool commandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> commandBuffers;
 
+    // Matches VulkanContext::MAX_SYNC_INDEX.
     static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
     uint32_t currentFrame = 0;
+    bool allowMailbox = false;
+    bool usingMailbox = false;
+    bool needsRecreate = false;
     VkSemaphore imageAvailableSemaphores[MAX_FRAMES_IN_FLIGHT] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
-    VkSemaphore renderFinishedSemaphores[MAX_FRAMES_IN_FLIGHT] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    // One present semaphore per swapchain image, not per frame-in-flight slot.
+    std::vector<VkSemaphore> renderFinishedSemaphores;
 };
 
 } // namespace libretrodroid

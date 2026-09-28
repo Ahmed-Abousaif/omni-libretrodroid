@@ -20,6 +20,7 @@
 
 #include <EGL/egl.h>
 
+#include <chrono>
 #include <string>
 #include <utility>
 #include <vector>
@@ -33,6 +34,7 @@
 #include "video.h"
 #include "renderers/renderer.h"
 #include "fpssync.h"
+#include "stats.h"
 #include "input.h"
 #include "rumble.h"
 #include "shadermanager.h"
@@ -58,11 +60,6 @@ void LibretroDroid::callback_hw_video_refresh(
     unsigned height,
     size_t pitch
 ) {
-    static int vrCount = 0;
-    vrCount++;
-    if (vrCount <= 10 || vrCount % 60 == 0) {
-        LOGI("callback_hw_video_refresh #%d: data=%p, size=%u x %u, pitch=%zu", vrCount, data, width, height, pitch);
-    }
     LibretroDroid::getInstance().handleVideoRefresh(data, width, height, pitch);
 }
 
@@ -102,6 +99,7 @@ void LibretroDroid::resetGlobalVariables() {
     fpsSync = nullptr;
     input = nullptr;
     rumble = nullptr;
+    nonBlockingVulkanPresent = false;
 }
 
 int LibretroDroid::availableDisks() {
@@ -324,6 +322,7 @@ void LibretroDroid::create(
     bool enableVirtualFileSystem,
     bool enableMicrophone,
     bool duplicateFrames,
+    bool frameCatchUp,
     std::optional<ImmersiveMode::Config> immersiveModeConfig,
     const std::string& language
 ) {
@@ -344,6 +343,7 @@ void LibretroDroid::create(
     openglESVersion = GLESVersion;
     screenRefreshRate = refreshRate;
     skipDuplicateFrames = duplicateFrames;
+    allowFrameCatchUp = frameCatchUp;
     immersiveModeEnabled = GLESVersion >= 3 && GLESVersion != 5 && immersiveModeConfig.has_value();
     this->immersiveModeConfig = immersiveModeConfig.value_or(ImmersiveMode::Config{});
     audioEnabled = true;
@@ -378,6 +378,10 @@ void LibretroDroid::create(
 
 void LibretroDroid::loadGameFromPath(const std::string& gamePath) {
     LOGD("Performing libretrodroid loadGameFromPath");
+    if (!core) {
+        LOGE("loadGameFromPath called but core is not initialized");
+        throw std::runtime_error("Core is not initialized");
+    }
     struct retro_system_info system_info {};
     core->retro_get_system_info(&system_info);
 
@@ -405,6 +409,10 @@ void LibretroDroid::loadGameFromPath(const std::string& gamePath) {
 
 void LibretroDroid::loadGameFromBytes(const int8_t *data, size_t size) {
     LOGD("Performing libretrodroid loadGameFromBytes");
+    if (!core) {
+        LOGE("loadGameFromBytes called but core is not initialized");
+        throw std::runtime_error("Core is not initialized");
+    }
 
     struct retro_system_info system_info {};
     core->retro_get_system_info(&system_info);
@@ -432,6 +440,10 @@ void LibretroDroid::loadGameFromBytes(const int8_t *data, size_t size) {
 
 void LibretroDroid::loadGameFromVirtualFiles(std::vector<VFSFile> virtualFiles) {
     LOGD("Performing libretrodroid loadGameFromVirtualFiles");
+    if (!core) {
+        LOGE("loadGameFromVirtualFiles called but core is not initialized");
+        throw std::runtime_error("Core is not initialized");
+    }
     struct retro_system_info system_info {};
     core->retro_get_system_info(&system_info);
 
@@ -480,15 +492,20 @@ void LibretroDroid::destroy() {
         if (VulkanContext::getInstance().getContextDestroy() != nullptr) {
             VulkanContext::getInstance().getContextDestroy()();
         }
-        vulkanRenderer->deinitialize();
-        vulkanRenderer = nullptr;
-        VulkanContext::getInstance().deinitialize();
     } else if (Environment::getInstance().getHwContextDestroy() != nullptr) {
         Environment::getInstance().getHwContextDestroy()();
     }
 
-    core->retro_unload_game();
-    core->retro_deinit();
+    if (core) {
+        core->retro_unload_game();
+        core->retro_deinit();
+    }
+
+    if (vulkanRenderer) {
+        vulkanRenderer->deinitialize();
+        vulkanRenderer = nullptr;
+        VulkanContext::getInstance().deinitialize();
+    }
 
     video = nullptr;
     core = nullptr;
@@ -528,22 +545,48 @@ void LibretroDroid::step() {
 
     LOGD("Stepping into retro_run()");
 
+    if (vulkanRenderer && fpsSync) {
+        // FIFO present blocks inside the queue lock for a full refresh. A core
+        // that submits from its own thread (PS2's CPU thread) then only gets
+        // the queue between presents, and a heavy scene locks to half rate.
+        // MAILBOX returns immediately; the frame wait below runs after the lock
+        // is released, and only if MAILBOX was actually selected.
+        vulkanRenderer->setAllowMailbox(!fpsSync->usesVSync() || nonBlockingVulkanPresent);
+        fpsSync->setSoftwarePace(nonBlockingVulkanPresent && vulkanRenderer->isUsingMailbox());
+    }
+
     unsigned frames = 1;
     if (fpsSync) {
         unsigned requestedFrames = fpsSync->advanceFrames();
 
-        // If the application runs too slow it's better to just skip those frames.
-        frames = std::min(requestedFrames, 2u);
+        // Heavy cores already spend the whole slice inside one retro_run.
+        // Running a second one when late only deepens the stall.
+        frames = allowFrameCatchUp ? std::min(requestedFrames, 2u) : 1u;
     }
 
+#ifndef NDEBUG
+    const auto runStart = std::chrono::steady_clock::now();
+#endif
     for (size_t i = 0; i < frames * frameSpeed; i++)
         core->retro_run();
+#ifndef NDEBUG
+    const auto runEnd = std::chrono::steady_clock::now();
+#endif
 
     if (vulkanRenderer) {
         vulkanRenderer->renderFrame();
     } else if (video && !video->rendersInVideoCallback()) {
         video->renderFrame();
     }
+
+#ifndef NDEBUG
+    static thread_local auto lastPresent = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    const double runMs = std::chrono::duration<double, std::milli>(runEnd - runStart).count();
+    const double presentIntervalMs = std::chrono::duration<double, std::milli>(now - lastPresent).count();
+    lastPresent = now;
+    LRDStats::noteStep(runMs, presentIntervalMs);
+#endif
 
     if (fpsSync) {
         fpsSync->wait();
@@ -593,6 +636,10 @@ void LibretroDroid::refreshAspectRatio() {
 
 void LibretroDroid::setRumbleEnabled(bool enabled) {
     rumbleEnabled = enabled;
+}
+
+void LibretroDroid::setNonBlockingVulkanPresent(bool enabled) {
+    nonBlockingVulkanPresent = enabled;
 }
 
 bool LibretroDroid::isRumbleEnabled() const {

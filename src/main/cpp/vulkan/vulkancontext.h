@@ -55,8 +55,12 @@ public:
     // Libretro interface callback helpers
     void setImage(const struct retro_vulkan_image* img, uint32_t numSemaphores, const VkSemaphore* semaphores, uint32_t srcQueueFamily);
     void setCommandBuffers(uint32_t numCmd, const VkCommandBuffer* cmd);
+    // Core callback. Waits until this slot's last submission has finished.
+    // Does not reset the fence; the frontend owns reset.
     void waitSyncIndex();
-    uint32_t getSyncIndex() const { return syncIndex; }
+    // Frontend only, before reusing the slot. Waits and resets the fence once.
+    void waitAndResetSyncFence();
+    uint32_t getSyncIndex();
     uint32_t getSyncIndexMask() const { return (1u << MAX_SYNC_INDEX) - 1u; }
     void setSignalSemaphore(VkSemaphore sem);
 
@@ -70,14 +74,10 @@ public:
     const std::vector<VkSemaphore>& getWaitSemaphores() const { return waitSemaphores; }
     const std::vector<VkCommandBuffer>& getCoreCommandBuffers() const { return coreCommandBuffers; }
     VkSemaphore getSignalSemaphore() const { return signalSemaphore; }
-    VkFence getCurrentSyncFence() const { return syncFences[syncIndex]; }
+    VkFence getCurrentSyncFence();
     void clearPerFrameState();
 
-    void setFenceInFlight(uint32_t index) {
-        if (index < MAX_SYNC_INDEX) {
-            fenceWaited[index] = false;
-        }
-    }
+    void setCurrentFenceInFlight();
 
     void advanceSyncIndex();
 
@@ -135,7 +135,13 @@ private:
     std::vector<VkCommandBuffer> coreCommandBuffers;
     VkSemaphore signalSemaphore = VK_NULL_HANDLE;
 
+    // Fence wait/reset is shared by the core thread and the render thread.
+    // Both used to reset the same fence. A second reset leaves it unsignaled
+    // while a present semaphore is still in use, and Android then crashes in
+    // Surface::queueBuffer. Only the frontend resets.
+    mutable std::mutex syncMutex;
     uint32_t syncIndex = 0;
+    uint32_t waitedIndex = 0;
     VkFence syncFences[MAX_SYNC_INDEX] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
     bool fenceWaited[MAX_SYNC_INDEX] = { false, false, false };
 };

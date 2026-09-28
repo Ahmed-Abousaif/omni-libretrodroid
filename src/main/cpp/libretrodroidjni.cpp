@@ -391,6 +391,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_create(
     jboolean enableVirtualFileSystem,
     jboolean enableMicrophone,
     jboolean skipDuplicateFrames,
+    jboolean allowFrameCatchUp,
     jobject immersiveMode,
     jstring language
 ) {
@@ -440,6 +441,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_create(
             enableVirtualFileSystem,
             enableMicrophone,
             skipDuplicateFrames,
+            allowFrameCatchUp,
             parsedConfig,
             deviceLanguage.stdString()
         );
@@ -595,6 +597,14 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setRumbleE
     jboolean enabled
 ) {
     LibretroDroid::getInstance().setRumbleEnabled(enabled);
+}
+
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setNonBlockingVulkanPresent(
+    JNIEnv* env,
+    jclass obj,
+    jboolean enabled
+) {
+    LibretroDroid::getInstance().setNonBlockingVulkanPresent(enabled);
 }
 
 JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setFrameSpeed(

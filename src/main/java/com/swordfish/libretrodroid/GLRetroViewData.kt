@@ -33,6 +33,8 @@ class GLRetroViewData(context: Context) {
     var rumbleEventsEnabled: Boolean = true
     var preferLowLatencyAudio: Boolean = true
     var skipDuplicateFrames: Boolean = false
+    var allowFrameCatchUp: Boolean = true
+    var nonBlockingVulkanPresent: Boolean = false
     var enableMicrophone: Boolean = false
     var immersiveMode: ImmersiveMode? = null
 }

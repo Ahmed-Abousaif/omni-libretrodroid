@@ -18,6 +18,8 @@
 #include "log.h"
 
 #include "audio.h"
+#include "stats.h"
+#include <algorithm>
 #include <cmath>
 #include <memory>
 
@@ -56,6 +58,15 @@ bool Audio::initializeStream() {
         fifoBuffer = std::make_unique<oboe::FifoBuffer>(2, audioBufferSize);
         temporaryAudioBuffer = std::unique_ptr<int16_t[]>(new int16_t[audioBufferSize]);
         latencyTuner = std::make_unique<oboe::LatencyTuner>(*stream);
+        soundTouch = std::make_unique<soundtouch::SoundTouch>();
+        soundTouch->setSampleRate(stream->getSampleRate());
+        soundTouch->setChannels(2);
+        soundTouch->setSetting(SETTING_USE_QUICKSEEK, 0);
+        soundTouch->setSetting(SETTING_USE_AA_FILTER, 1);
+        soundTouch->setSetting(SETTING_SEQUENCE_MS, 30);
+        soundTouch->setSetting(SETTING_SEEKWINDOW_MS, 20);
+        soundTouch->setSetting(SETTING_OVERLAP_MS, 10);
+        soundTouch->setTempo(1.0);
         return true;
     } else {
         LOGE("Failed to create stream. Error: %s", oboe::convertToText(result));
@@ -81,7 +92,10 @@ int32_t Audio::computeAudioBufferSize() {
 }
 
 double Audio::computeMaximumLatency() const {
-    double maxLatency = (audioLatencySettings->bufferSizeInVideoFrames / contentRefreshRate) * 1000;
+    // Stretching needs lookahead, so the fifo is at least the 10-frame buffer
+    // even when the stream itself is opened in low-latency mode.
+    unsigned videoFrames = std::max(audioLatencySettings->bufferSizeInVideoFrames, 10u);
+    double maxLatency = (videoFrames / contentRefreshRate) * 1000;
     return std::max(maxLatency, 48.0);
 }
 
@@ -97,8 +111,87 @@ void Audio::stop() {
         stream->requestStop();
 }
 
+void Audio::updateStretch(size_t frames) {
+    if (!soundTouch || inputSampleRate <= 0) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (stretchWindowStart.time_since_epoch().count() == 0) {
+        stretchWindowStart = now;
+    }
+    stretchWindowFrames += frames;
+    const double elapsed = std::chrono::duration<double>(now - stretchWindowStart).count();
+    if (elapsed < 0.5) {
+        return;
+    }
+
+    const double ratio = (static_cast<double>(stretchWindowFrames) / elapsed) / inputSampleRate;
+    stretchWindowFrames = 0;
+    stretchWindowStart = now;
+
+    const bool wantStretch = playbackSpeed < 1.05 && ratio < 0.95;
+    if (wantStretch) {
+        fullSpeedMs = 0.0;
+        if (!stretching.load()) {
+            soundTouch->clear();
+            stretching.store(true);
+        }
+        lastStretchRatio = std::clamp(ratio, 0.25, 1.0);
+        soundTouch->setTempo(lastStretchRatio);
+        return;
+    }
+
+    if (!stretching.load()) {
+        return;
+    }
+    if (ratio > 0.98) {
+        fullSpeedMs += elapsed * 1000.0;
+        if (fullSpeedMs >= 1000.0) {
+            stretching.store(false);
+            soundTouch->clear();
+            fullSpeedMs = 0.0;
+        }
+        return;
+    }
+    fullSpeedMs = 0.0;
+    lastStretchRatio = std::clamp(ratio, 0.25, 1.0);
+    soundTouch->setTempo(lastStretchRatio);
+}
+
 void Audio::write(const int16_t *data, size_t frames) {
-    fifoBuffer->write(data, frames * 2);
+    if (!fifoBuffer || frames == 0) {
+        return;
+    }
+    updateStretch(frames);
+    if (stretching.load() && soundTouch) {
+        stretchInput.resize(frames * 2);
+        for (size_t i = 0; i < frames * 2; ++i) {
+            stretchInput[i] = data[i] / 32768.0f;
+        }
+        const double capacity = fifoBuffer->getBufferCapacityInFrames();
+        const double available = fifoBuffer->getFullFramesAvailable();
+        const double fill = capacity > 0.0 ? available / capacity : 0.5;
+        const double bias = std::clamp((fill - 0.75) * 0.05, -0.02, 0.02);
+        soundTouch->setTempo(std::clamp(lastStretchRatio * (1.0 + bias), 0.25, 1.0));
+        soundTouch->putSamples(stretchInput.data(), static_cast<uint>(frames));
+        const uint outCapacity = static_cast<uint>(std::max<size_t>(frames * 2, 256));
+        stretchOutput.resize(outCapacity * 2);
+        uint received = 0;
+        while ((received = soundTouch->receiveSamples(stretchOutput.data(), outCapacity)) > 0) {
+            stretchPcm.resize(received * 2);
+            for (uint i = 0; i < received * 2; ++i) {
+                float sample = std::clamp(stretchOutput[i], -1.0f, 1.0f);
+                stretchPcm[i] = static_cast<int16_t>(sample * 32767.0f);
+            }
+            fifoBuffer->write(stretchPcm.data(), received * 2);
+            if (received < outCapacity) {
+                break;
+            }
+        }
+    } else {
+        fifoBuffer->write(data, frames * 2);
+    }
+    LRDStats::noteAudioWrite(frames);
 }
 
 void Audio::setPlaybackSpeed(const double newPlaybackSpeed) {
@@ -117,28 +210,110 @@ oboe::DataCallbackResult Audio::onAudioReady(oboe::AudioStream *oboeStream, void
 
     int32_t requestedSamples = currentFramesToSubmit * 2;
     int32_t samplesRead = fifoBuffer->readNow(temporaryAudioBuffer.get(), requestedSamples);
-    if (samplesRead < requestedSamples) {
-        std::fill(temporaryAudioBuffer.get() + std::max(0, samplesRead), temporaryAudioBuffer.get() + requestedSamples, 0);
+    fadeBuffer(temporaryAudioBuffer.get(), samplesRead, requestedSamples);
+
+    double capacity = fifoBuffer->getBufferCapacityInFrames();
+    double available = fifoBuffer->getFullFramesAvailable();
+    double fillPercent = capacity > 0.0 ? (100.0 * available / capacity) : 0.0;
+    int32_t xruns = 0;
+    auto xrunResult = oboeStream->getXRunCount();
+    if (xrunResult) {
+        xruns = xrunResult.value();
     }
+    LRDStats::noteAudioState(fillPercent, xruns, lastPiAdjustment);
 
     auto outputArray = reinterpret_cast<int16_t *>(audioData);
     resampler.resample(temporaryAudioBuffer.get(), currentFramesToSubmit, outputArray, numFrames);
 
-    latencyTuner->tune();
+    if (!stretching.load()) {
+        latencyTuner->tune();
+    }
 
     return oboe::DataCallbackResult::Continue;
 }
 
 // To prevent audio buffer overruns or underruns we set up a PI controller. The idea is to run the
 // audio slower when the buffer is empty and faster when it's full.
+void Audio::fadeBuffer(int16_t* buffer, int32_t samplesRead, int32_t requestedSamples) {
+    if (requestedSamples <= 0) {
+        return;
+    }
+    if (samplesRead < 0) {
+        samplesRead = 0;
+    }
+    if (samplesRead >= requestedSamples) {
+        if (samplesRead >= 2) {
+            lastOutputLeft = buffer[samplesRead - 2];
+            lastOutputRight = buffer[samplesRead - 1];
+        }
+        if (fadingIn && samplesRead >= 2) {
+            const int32_t frames = samplesRead / 2;
+            const int32_t fadeFrames = std::min(frames, 96);
+            for (int32_t i = 0; i < fadeFrames; ++i) {
+                const float gain = static_cast<float>(i + 1) / static_cast<float>(fadeFrames);
+                buffer[i * 2] = static_cast<int16_t>(buffer[i * 2] * gain);
+                buffer[i * 2 + 1] = static_cast<int16_t>(buffer[i * 2 + 1] * gain);
+            }
+            fadingIn = false;
+        }
+        return;
+    }
+
+    LRDStats::noteUnderrun(requestedSamples - samplesRead);
+    int16_t left = lastOutputLeft;
+    int16_t right = lastOutputRight;
+    if (samplesRead >= 2) {
+        left = buffer[samplesRead - 2];
+        right = buffer[samplesRead - 1];
+    }
+    const int32_t startFrame = samplesRead / 2;
+    const int32_t totalFrames = requestedSamples / 2;
+    const int32_t fadeFrames = std::min(totalFrames - startFrame, 96);
+    for (int32_t frame = startFrame; frame < totalFrames; ++frame) {
+        const int32_t intoFade = frame - startFrame;
+        const float gain = intoFade < fadeFrames
+            ? 1.0f - (static_cast<float>(intoFade + 1) / static_cast<float>(fadeFrames))
+            : 0.0f;
+        buffer[frame * 2] = static_cast<int16_t>(left * gain);
+        buffer[frame * 2 + 1] = static_cast<int16_t>(right * gain);
+    }
+    lastOutputLeft = 0;
+    lastOutputRight = 0;
+    fadingIn = true;
+}
+
 double Audio::computeDynamicBufferConversionFactor(double dt) {
+    if (stretching.load()) {
+        lastPiAdjustment = 0.0;
+        return 1.0;
+    }
+
     double framesCapacityInBuffer = fifoBuffer->getBufferCapacityInFrames();
     double framesAvailableInBuffer = fifoBuffer->getFullFramesAvailable();
+    if (framesCapacityInBuffer <= 0.0) {
+        return 1.0;
+    }
 
-    // Error is represented by normalized distance to half buffer utilization. Range [-1.0, 1.0]
-    double errorMeasure = (framesCapacityInBuffer - 2.0f * framesAvailableInBuffer) / framesCapacityInBuffer;
+    const double fill = framesAvailableInBuffer / framesCapacityInBuffer;
+    const double target = 0.5;
+    double errorMeasure = (target - fill) / target;
 
-    errorIntegral += errorMeasure * dt;
+    const auto now = std::chrono::steady_clock::now();
+    if (fill < 0.10 || fill > 0.90) {
+        if (fill < 0.10) {
+            if (!lowFillActive) {
+                lowFillActive = true;
+                lowFillSince = now;
+            } else if (std::chrono::duration<double, std::milli>(now - lowFillSince).count() > 100.0) {
+                errorIntegral = 0.0;
+            }
+        } else {
+            lowFillActive = false;
+        }
+    } else {
+        lowFillActive = false;
+        errorIntegral += errorMeasure * dt;
+    }
 
     // Wikipedia states that human ear resolution is around 3.6 Hz within the octave of 1000–2000 Hz.
     // This changes continuously, so we should try to keep it a very low value.
@@ -149,8 +324,7 @@ double Audio::computeDynamicBufferConversionFactor(double dt) {
     double integralAdjustment = std::clamp(ki * errorIntegral, -maxi, maxi);
 
     double finalAdjustment = proportionalAdjustment + integralAdjustment;
-
-    LOGD("Audio speed adjustments (p: %f) (i: %f)", proportionalAdjustment, integralAdjustment);
+    lastPiAdjustment = finalAdjustment;
 
     return 1.0 - (finalAdjustment);
 }

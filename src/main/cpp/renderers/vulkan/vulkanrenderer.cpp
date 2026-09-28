@@ -66,22 +66,72 @@ bool VulkanRenderer::initialize() {
     return true;
 }
 
+void VulkanRenderer::waitQueueIdleLocked() {
+    VkQueue queue = VulkanContext::getInstance().getQueue();
+    if (queue == VK_NULL_HANDLE) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(VulkanContext::getInstance().getQueueMutex());
+    vkQueueWaitIdle(queue);
+}
+
+void VulkanRenderer::setAllowMailbox(bool allow) {
+    if (allowMailbox == allow) {
+        return;
+    }
+    allowMailbox = allow;
+    if (initialized) {
+        needsRecreate = true;
+    }
+}
+
+void VulkanRenderer::destroyRenderFinishedSemaphores() {
+    VkDevice device = VulkanContext::getInstance().getDevice();
+    if (device == VK_NULL_HANDLE) {
+        renderFinishedSemaphores.clear();
+        return;
+    }
+    for (VkSemaphore semaphore : renderFinishedSemaphores) {
+        if (semaphore != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device, semaphore, nullptr);
+        }
+    }
+    renderFinishedSemaphores.clear();
+}
+
+void VulkanRenderer::ensureRenderFinishedSemaphores(uint32_t count) {
+    if (renderFinishedSemaphores.size() == count) {
+        return;
+    }
+    destroyRenderFinishedSemaphores();
+    VkDevice device = VulkanContext::getInstance().getDevice();
+    if (device == VK_NULL_HANDLE || count == 0) {
+        return;
+    }
+    renderFinishedSemaphores.assign(count, VK_NULL_HANDLE);
+    VkSemaphoreCreateInfo sci {};
+    sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (vkCreateSemaphore(device, &sci, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS) {
+            LOGE("vkCreateSemaphore failed for swapchain image %u", i);
+            renderFinishedSemaphores[i] = VK_NULL_HANDLE;
+        }
+    }
+}
+
 void VulkanRenderer::deinitialize() {
     LOGI("Deinitializing VulkanRenderer...");
     VkDevice device = VulkanContext::getInstance().getDevice();
     if (device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(device);
+        waitQueueIdleLocked();
 
         for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
             if (imageAvailableSemaphores[i] != VK_NULL_HANDLE) {
                 vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
                 imageAvailableSemaphores[i] = VK_NULL_HANDLE;
             }
-            if (renderFinishedSemaphores[i] != VK_NULL_HANDLE) {
-                vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
-                renderFinishedSemaphores[i] = VK_NULL_HANDLE;
-            }
         }
+        destroyRenderFinishedSemaphores();
 
         if (commandPool != VK_NULL_HANDLE) {
             vkDestroyCommandPool(device, commandPool, nullptr);
@@ -124,15 +174,38 @@ void VulkanRenderer::deinitialize() {
     initialized = false;
 }
 
+bool VulkanRenderer::surfaceMismatch() const {
+    VkPhysicalDevice gpu = VulkanContext::getInstance().getGpu();
+    VkSurfaceKHR surface = VulkanContext::getInstance().getSurface();
+    if (gpu == VK_NULL_HANDLE || surface == VK_NULL_HANDLE || swapchain == VK_NULL_HANDLE) {
+        return false;
+    }
+    VkSurfaceCapabilitiesKHR caps {};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &caps) != VK_SUCCESS) {
+        return false;
+    }
+    if (caps.currentTransform != currentTransform) {
+        return true;
+    }
+    if (caps.currentExtent.width != 0xFFFFFFFF &&
+        (caps.currentExtent.width != swapchainExtent.width ||
+         caps.currentExtent.height != swapchainExtent.height)) {
+        return true;
+    }
+    return false;
+}
+
 void VulkanRenderer::updateScreenSize(uint32_t width, uint32_t height) {
     LOGI("VulkanRenderer::updateScreenSize %u x %u", width, height);
-    if (screenWidth != width || screenHeight != height) {
+    const bool sizeChanged = screenWidth != width || screenHeight != height;
+    if (sizeChanged) {
         screenWidth = width;
         screenHeight = height;
-        if (initialized) {
-            destroySwapchain();
-            createSwapchain();
-        }
+    }
+    if (initialized && (sizeChanged || surfaceMismatch())) {
+        waitQueueIdleLocked();
+        destroySwapchain();
+        createSwapchain();
     }
 }
 
@@ -191,6 +264,10 @@ bool VulkanRenderer::createSwapchain() {
 
     if (caps.currentExtent.width != 0xFFFFFFFF && caps.currentExtent.width > 0) {
         swapchainExtent = caps.currentExtent;
+        // currentExtent is the window in its current orientation. Aspect and
+        // pixel fit have to use this, not a size cached from the previous rotation.
+        screenWidth = swapchainExtent.width;
+        screenHeight = swapchainExtent.height;
     } else {
         uint32_t w = screenWidth > 0 ? screenWidth : 1920;
         uint32_t h = screenHeight > 0 ? screenHeight : 1080;
@@ -226,12 +303,15 @@ bool VulkanRenderer::createSwapchain() {
     vkGetPhysicalDeviceSurfacePresentModesKHR(gpu, surface, &presentModeCount, presentModes.data());
 
     VkPresentModeKHR chosenPresentMode = VK_PRESENT_MODE_FIFO_KHR;
-    for (auto pm : presentModes) {
-        if (pm == VK_PRESENT_MODE_MAILBOX_KHR) {
-            chosenPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
-            break;
+    if (allowMailbox) {
+        for (auto pm : presentModes) {
+            if (pm == VK_PRESENT_MODE_MAILBOX_KHR) {
+                chosenPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+                break;
+            }
         }
     }
+    usingMailbox = chosenPresentMode == VK_PRESENT_MODE_MAILBOX_KHR;
 
     sci.compositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
     if (!(caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR)) {
@@ -297,6 +377,7 @@ bool VulkanRenderer::createSwapchain() {
         }
     }
 
+    ensureRenderFinishedSemaphores(actualImageCount);
     return true;
 }
 
@@ -599,8 +680,7 @@ bool VulkanRenderer::createSyncObjects() {
     sci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-        if (vkCreateSemaphore(device, &sci, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(device, &sci, nullptr, &renderFinishedSemaphores[i]) != VK_SUCCESS) {
+        if (vkCreateSemaphore(device, &sci, nullptr, &imageAvailableSemaphores[i]) != VK_SUCCESS) {
             LOGE("vkCreateSemaphore failed for frame %u", i);
             return false;
         }
@@ -620,8 +700,19 @@ bool VulkanRenderer::renderFrame() {
         return false;
     }
 
-    // Wait on core's sync fence for previous work on this slot
-    VulkanContext::getInstance().waitSyncIndex();
+    // Recreate only after acquire/present reports the surface changed, or after
+    // a failed submit. Querying surface caps every frame races BufferQueue.
+    if (needsRecreate) {
+        waitQueueIdleLocked();
+        destroySwapchain();
+        if (!createSwapchain()) {
+            return false;
+        }
+        needsRecreate = false;
+    }
+
+    // Wait on this slot's fence and reset it once. The core waits without resetting.
+    VulkanContext::getInstance().waitAndResetSyncFence();
 
     uint32_t imageIndex = 0;
     VkResult res = vkAcquireNextImageKHR(
@@ -633,12 +724,19 @@ bool VulkanRenderer::renderFrame() {
         &imageIndex
     );
 
-    if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
-        destroySwapchain();
-        createSwapchain();
+    const bool suboptimal = res == VK_SUBOPTIMAL_KHR;
+    if (res == VK_ERROR_OUT_OF_DATE_KHR) {
+        // The acquire did not signal a semaphore. Recreate before the next frame.
+        needsRecreate = true;
         return false;
-    } else if (res != VK_SUCCESS) {
+    }
+    if (res != VK_SUCCESS && !suboptimal) {
         LOGE("vkAcquireNextImageKHR failed: %d", res);
+        return false;
+    }
+    if (imageIndex >= renderFinishedSemaphores.size() ||
+        renderFinishedSemaphores[imageIndex] == VK_NULL_HANDLE) {
+        LOGE("Missing present semaphore for swapchain image %u", imageIndex);
         return false;
     }
 
@@ -732,16 +830,6 @@ bool VulkanRenderer::renderFrame() {
     push.offset[0] = logicalOffsetX * cosTheta - logicalOffsetY * sinTheta;
     push.offset[1] = logicalOffsetX * sinTheta + logicalOffsetY * cosTheta;
 
-    static int frameCount = 0;
-    frameCount++;
-    if (frameCount <= 10 || frameCount % 60 == 0) {
-        LOGI("VulkanRenderer::renderFrame #%d: img=%p (view=%p, layout=%d), swapchain=%u x %u, transform=%d, scale=(%.3f, %.3f), off=(%.3f, %.3f)",
-             frameCount, currentImage, currentImage ? (void*)currentImage->image_view : nullptr,
-             currentImage ? currentImage->image_layout : -1,
-             swapchainExtent.width, swapchainExtent.height, (int)currentTransform,
-             scaleX, scaleY, logicalOffsetX, logicalOffsetY);
-    }
-
     VkCommandBuffer cmd = commandBuffers[currentFrame];
     vkResetCommandBuffer(cmd, 0);
 
@@ -792,7 +880,7 @@ bool VulkanRenderer::renderFrame() {
     }
 
     std::vector<VkSemaphore> signalSems;
-    signalSems.push_back(renderFinishedSemaphores[currentFrame]);
+    signalSems.push_back(renderFinishedSemaphores[imageIndex]);
 
     VkSemaphore coreSignal = VulkanContext::getInstance().getSignalSemaphore();
     if (coreSignal != VK_NULL_HANDLE) {
@@ -824,23 +912,33 @@ bool VulkanRenderer::renderFrame() {
         std::lock_guard<std::mutex> lock(VulkanContext::getInstance().getQueueMutex());
         res = vkQueueSubmit(queue, 1, &si, currentSyncFence);
         if (res != VK_SUCCESS) {
+            // Present would queue a buffer whose wait semaphore never signaled.
+            // Android crashes in Surface::queueBuffer on that path.
             LOGE("vkQueueSubmit failed: %d", res);
+            needsRecreate = true;
+            vkQueueWaitIdle(queue);
+            if (imageAvailableSemaphores[currentFrame] != VK_NULL_HANDLE) {
+                vkDestroySemaphore(device, imageAvailableSemaphores[currentFrame], nullptr);
+                imageAvailableSemaphores[currentFrame] = VK_NULL_HANDLE;
+            }
+            VkSemaphoreCreateInfo replacement {};
+            replacement.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+            vkCreateSemaphore(device, &replacement, nullptr, &imageAvailableSemaphores[currentFrame]);
         } else {
-            VulkanContext::getInstance().setFenceInFlight(VulkanContext::getInstance().getSyncIndex());
-        }
+            VulkanContext::getInstance().setCurrentFenceInFlight();
 
-        VkPresentInfoKHR pi {};
-        pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        pi.waitSemaphoreCount = 1;
-        pi.pWaitSemaphores = &renderFinishedSemaphores[currentFrame];
-        pi.swapchainCount = 1;
-        pi.pSwapchains = &swapchain;
-        pi.pImageIndices = &imageIndex;
+            VkPresentInfoKHR pi {};
+            pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            pi.waitSemaphoreCount = 1;
+            pi.pWaitSemaphores = &renderFinishedSemaphores[imageIndex];
+            pi.swapchainCount = 1;
+            pi.pSwapchains = &swapchain;
+            pi.pImageIndices = &imageIndex;
 
-        res = vkQueuePresentKHR(queue, &pi);
-        if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
-            destroySwapchain();
-            createSwapchain();
+            res = vkQueuePresentKHR(queue, &pi);
+            if (suboptimal || res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
+                needsRecreate = true;
+            }
         }
     }
 

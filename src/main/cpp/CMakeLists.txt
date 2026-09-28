@@ -17,6 +17,13 @@ add_subdirectory (${OBOE_DIR} oboe)
 include_directories (${OBOE_DIR}/include)
 include_directories (${OBOE_DIR}/src)
 
+# SoundTouch 2.3.3 (LGPL-2.1). Float samples, no command-line utility.
+set(SOUNDSTRETCH OFF CACHE BOOL "" FORCE)
+set(SOUNDTOUCH_DLL OFF CACHE BOOL "" FORCE)
+set(INTEGER_SAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(soundtouch)
+set_target_properties(SoundTouch PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 include_directories("libretro/libretro-common/include")
 
 set (LIBRETRO_COMMON
@@ -53,6 +60,8 @@ add_library(libretrodroid SHARED
         renderers/es3/imagerendereres3.cpp
         audio.h
         audio.cpp
+        stats.h
+        stats.cpp
         resamplers/resampler.h
         resamplers/linearresampler.h
         resamplers/linearresampler.cpp
@@ -111,4 +120,5 @@ target_link_libraries(libretrodroid
                       oboe
                       GLESv3
                       vulkan
+                      SoundTouch
 )

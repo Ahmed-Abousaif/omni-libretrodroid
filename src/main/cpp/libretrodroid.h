@@ -93,6 +93,7 @@ public:
         bool enableVirtualFileSystem,
         bool enableMicrophone,
         bool duplicateFrames,
+        bool allowFrameCatchUp,
         std::optional<ImmersiveMode::Config> immersiveModeConfig,
         const std::string& language
     );
@@ -128,6 +129,7 @@ public:
     void changeDisk(unsigned int index);
 
     void setRumbleEnabled(bool enabled);
+    void setNonBlockingVulkanPresent(bool enabled);
     bool isRumbleEnabled() const;
     void handleRumbleUpdates(const std::function<void(int, float, float)> &handler);
 
@@ -175,6 +177,8 @@ private:
     float screenRefreshRate = 60.0;
     int openglESVersion = 2;
     bool skipDuplicateFrames = false;
+    bool allowFrameCatchUp = true;
+    bool nonBlockingVulkanPresent = false;
     bool immersiveModeEnabled = false;
     ImmersiveMode::Config immersiveModeConfig {};
 

@@ -19,9 +19,13 @@
 #define LIBRETRODROID_AUDIO_H
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <unistd.h>
+#include <vector>
 #include <oboe/Oboe.h>
 #include <oboe/FifoBuffer.h>
+#include <SoundTouch.h>
 
 #include "resamplers/linearresampler.h"
 
@@ -63,12 +67,14 @@ private:
     bool initializeStream();
     std::unique_ptr<Audio::AudioLatencySettings> findBestLatencySettings(bool preferLowLatencyAudio);
     double computeMaximumLatency() const;
+    void updateStretch(size_t frames);
+    void fadeBuffer(int16_t* buffer, int32_t samplesRead, int32_t requestedSamples);
 
 private:
     const double kp = 0.006;
     const double ki = 0.00002;
     const double maxp = 0.003;
-    const double maxi = 0.02;
+    const double maxi = 0.005;
 
     LinearResampler resampler;
     std::unique_ptr<oboe::FifoBuffer> fifoBuffer = nullptr;
@@ -87,6 +93,23 @@ private:
     double errorIntegral = 0.0;
 
     double playbackSpeed = 1.0;
+    double lastPiAdjustment = 0.0;
+
+    std::unique_ptr<soundtouch::SoundTouch> soundTouch;
+    std::atomic<bool> stretching { false };
+    std::chrono::steady_clock::time_point stretchWindowStart {};
+    size_t stretchWindowFrames = 0;
+    double fullSpeedMs = 0.0;
+    double lastStretchRatio = 1.0;
+    std::vector<float> stretchInput;
+    std::vector<float> stretchOutput;
+    std::vector<int16_t> stretchPcm;
+
+    int16_t lastOutputLeft = 0;
+    int16_t lastOutputRight = 0;
+    bool fadingIn = false;
+    bool lowFillActive = false;
+    std::chrono::steady_clock::time_point lowFillSince {};
 
     std::unique_ptr<AudioLatencySettings> audioLatencySettings;
 };

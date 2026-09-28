@@ -107,6 +107,7 @@ class GLRetroView(
             data.gameVirtualFiles.isNotEmpty(),
             data.enableMicrophone,
             data.skipDuplicateFrames,
+            data.allowFrameCatchUp,
             data.immersiveMode,
             getDeviceLanguage()
         )

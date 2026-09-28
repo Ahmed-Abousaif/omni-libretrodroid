@@ -457,12 +457,42 @@ void VulkanContext::setCommandBuffers(uint32_t numCmd, const VkCommandBuffer* cm
 }
 
 void VulkanContext::waitSyncIndex() {
-    if (device != VK_NULL_HANDLE && syncFences[syncIndex] != VK_NULL_HANDLE) {
-        if (!fenceWaited[syncIndex]) {
-            vkWaitForFences(device, 1, &syncFences[syncIndex], VK_TRUE, UINT64_MAX);
-            vkResetFences(device, 1, &syncFences[syncIndex]);
-            fenceWaited[syncIndex] = true;
-        }
+    // The core calls this before reusing a slot. Waiting is enough: the
+    // frontend resets the fence when it reuses the slot. Resetting here too
+    // races the frontend and leaves the fence unsignaled for the next submit.
+    std::lock_guard<std::mutex> lock(syncMutex);
+    const uint32_t index = waitedIndex;
+    if (index >= MAX_SYNC_INDEX || fenceWaited[index] || syncFences[index] == VK_NULL_HANDLE) {
+        return;
+    }
+    vkWaitForFences(device, 1, &syncFences[index], VK_TRUE, UINT64_MAX);
+}
+
+void VulkanContext::waitAndResetSyncFence() {
+    std::lock_guard<std::mutex> lock(syncMutex);
+    if (syncIndex >= MAX_SYNC_INDEX || fenceWaited[syncIndex] || syncFences[syncIndex] == VK_NULL_HANDLE) {
+        return;
+    }
+    vkWaitForFences(device, 1, &syncFences[syncIndex], VK_TRUE, UINT64_MAX);
+    vkResetFences(device, 1, &syncFences[syncIndex]);
+    fenceWaited[syncIndex] = true;
+}
+
+uint32_t VulkanContext::getSyncIndex() {
+    std::lock_guard<std::mutex> lock(syncMutex);
+    waitedIndex = syncIndex;
+    return syncIndex;
+}
+
+VkFence VulkanContext::getCurrentSyncFence() {
+    std::lock_guard<std::mutex> lock(syncMutex);
+    return syncFences[syncIndex];
+}
+
+void VulkanContext::setCurrentFenceInFlight() {
+    std::lock_guard<std::mutex> lock(syncMutex);
+    if (syncIndex < MAX_SYNC_INDEX) {
+        fenceWaited[syncIndex] = false;
     }
 }
 
@@ -478,6 +508,7 @@ void VulkanContext::clearPerFrameState() {
 }
 
 void VulkanContext::advanceSyncIndex() {
+    std::lock_guard<std::mutex> lock(syncMutex);
     syncIndex = (syncIndex + 1) % MAX_SYNC_INDEX;
 }
 
@@ -489,8 +520,6 @@ void VulkanContext::callbackSetImage(
     const VkSemaphore* semaphores,
     uint32_t src_queue_family
 ) {
-    LOGI("VulkanContext::callbackSetImage: img=%p (view=%p, layout=%d), num_sem=%u, qf=%u",
-         image, image ? (void*)image->image_view : nullptr, image ? image->image_layout : 0, num_semaphores, src_queue_family);
     static_cast<VulkanContext*>(handle)->setImage(image, num_semaphores, semaphores, src_queue_family);
 }
 
@@ -503,7 +532,6 @@ uint32_t VulkanContext::callbackGetSyncIndexMask(void* handle) {
 }
 
 void VulkanContext::callbackSetCommandBuffers(void* handle, uint32_t num_cmd, const VkCommandBuffer* cmd) {
-    LOGI("VulkanContext::callbackSetCommandBuffers: num_cmd=%u", num_cmd);
     static_cast<VulkanContext*>(handle)->setCommandBuffers(num_cmd, cmd);
 }
 
@@ -520,7 +548,6 @@ void VulkanContext::callbackUnlockQueue(void* handle) {
 }
 
 void VulkanContext::callbackSetSignalSemaphore(void* handle, VkSemaphore semaphore) {
-    LOGI("VulkanContext::callbackSetSignalSemaphore: sem=%p", (void*)semaphore);
     static_cast<VulkanContext*>(handle)->setSignalSemaphore(semaphore);
 }
 

@@ -35,11 +35,16 @@ public:
     unsigned advanceFrames();
     void wait();
     double getTimeStretchFactor();
+    bool usesVSync() const { return useVSync; }
+    // Pace in software even when the screen rate matches content. Used when
+    // present itself must not block, so a core thread can keep using the queue.
+    void setSoftwarePace(bool enabled) { softwarePace = enabled; }
 private:
 
     double screenRefreshRate;
     double contentRefreshRate;
     bool useVSync;
+    bool softwarePace = false;
     const double FPS_TOLERANCE = 5;
 
     const TimePoint MIN_TIME = TimePoint::min();

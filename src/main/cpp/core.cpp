@@ -29,8 +29,9 @@ Core::Core(const std::string& soCorePath) {
 void* get_symbol(void* handle, const char* symbol) {
     void* result = dlsym(handle, symbol);
     if (!result) {
-        LOGE("Cannot get symbol %s... Quitting", symbol);
-        throw std::runtime_error("Missing libretro core symbol");
+        const char* err = dlerror();
+        LOGE("Cannot get symbol %s: %s", symbol, err ? err : "unknown error");
+        throw std::runtime_error(std::string("Missing libretro core symbol: ") + symbol);
     }
     return result;
 }
@@ -38,8 +39,9 @@ void* get_symbol(void* handle, const char* symbol) {
 void Core::open(const std::string& soCorePath) {
     libHandle = dlopen(soCorePath.c_str(), RTLD_LOCAL | RTLD_LAZY);
     if (!libHandle) {
-        LOGE("Cannot dlopen library, closing");
-        throw std::runtime_error("Cannot dlopen library");
+        const char* err = dlerror();
+        LOGE("Cannot dlopen library %s: %s", soCorePath.c_str(), err ? err : "unknown error");
+        throw std::runtime_error(std::string("Cannot dlopen library: ") + (err ? err : "unknown"));
     }
     retro_cheat_reset = (void (*)()) get_symbol(libHandle, "retro_cheat_reset");
     retro_cheat_set = (void (*)(unsigned, bool, const char*)) get_symbol(libHandle, "retro_cheat_set");

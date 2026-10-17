@@ -230,10 +230,13 @@ void VulkanRenderer::updateViewportAlignment(unsigned int alignment) {
 }
 
 std::pair<float, float> VulkanRenderer::getRelativePosition(float touchX, float touchY) {
-    float displayW = static_cast<float>(swapchainExtent.width > 0 ? swapchainExtent.width : (screenWidth > 0 ? screenWidth : 1));
-    float displayH = static_cast<float>(swapchainExtent.height > 0 ? swapchainExtent.height : (screenHeight > 0 ? screenHeight : 1));
-    if (currentTransform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
-        std::swap(displayW, displayH);
+    float displayW = static_cast<float>(screenWidth > 0 ? screenWidth : (swapchainExtent.width > 0 ? swapchainExtent.width : 1));
+    float displayH = static_cast<float>(screenHeight > 0 ? screenHeight : (swapchainExtent.height > 0 ? swapchainExtent.height : 1));
+    if (screenWidth == 0 || screenHeight == 0) {
+        if (currentTransform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
+            displayW = static_cast<float>(swapchainExtent.height > 0 ? swapchainExtent.height : 1);
+            displayH = static_cast<float>(swapchainExtent.width > 0 ? swapchainExtent.width : 1);
+        }
     }
 
     float targetAspect = currentAspectRatio > 0.0f ? currentAspectRatio : (4.0f / 3.0f);
@@ -318,6 +321,10 @@ bool VulkanRenderer::createSwapchain() {
 
     if (caps.currentExtent.width != 0xFFFFFFFF && caps.currentExtent.width > 0) {
         swapchainExtent = caps.currentExtent;
+        // currentExtent is the window in its current orientation. Aspect and
+        // pixel fit have to use this, not a size cached from the previous rotation.
+        screenWidth = swapchainExtent.width;
+        screenHeight = swapchainExtent.height;
     } else {
         uint32_t w = screenWidth > 0 ? screenWidth : 1920;
         uint32_t h = screenHeight > 0 ? screenHeight : 1080;
@@ -851,10 +858,13 @@ bool VulkanRenderer::renderFrame() {
     }
 
     // Calculate display dimensions in user logical space
-    float displayW = static_cast<float>(swapchainExtent.width > 0 ? swapchainExtent.width : (screenWidth > 0 ? screenWidth : 1));
-    float displayH = static_cast<float>(swapchainExtent.height > 0 ? swapchainExtent.height : (screenHeight > 0 ? screenHeight : 1));
-    if (currentTransform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
-        std::swap(displayW, displayH);
+    float displayW = static_cast<float>(screenWidth > 0 ? screenWidth : swapchainExtent.width);
+    float displayH = static_cast<float>(screenHeight > 0 ? screenHeight : swapchainExtent.height);
+    if (screenWidth == 0 || screenHeight == 0) {
+        if (currentTransform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
+            displayW = static_cast<float>(swapchainExtent.height);
+            displayH = static_cast<float>(swapchainExtent.width);
+        }
     }
 
     float targetAspect = currentAspectRatio > 0.0f ? currentAspectRatio : (4.0f / 3.0f);
@@ -884,53 +894,38 @@ bool VulkanRenderer::renderFrame() {
         logicalOffsetY += emptyVerticalSpace;
     }
 
-    PushConstants push {};
+    float cosTheta = 1.0f;
+    float sinTheta = 0.0f;
+
     switch (currentTransform) {
         case VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR:
-            // Display hardware rotates buffer +90 deg (clockwise).
-            // Pre-rotate -90 deg (counter-clockwise) to compensate:
-            //   x_swap =  y_user =  scaleY * y_in + logicalOffsetY
-            //   y_swap = -x_user = -scaleX * x_in - logicalOffsetX
-            push.transform[0] = 0.0f;
-            push.transform[1] = -scaleX;
-            push.transform[2] = scaleY;
-            push.transform[3] = 0.0f;
-            push.offset[0] = logicalOffsetY;
-            push.offset[1] = -logicalOffsetX;
+            cosTheta = 0.0f;
+            sinTheta = 1.0f;
             break;
         case VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR:
-            // Rotate 180 deg:
-            //   x_swap = -x_user = -scaleX * x_in - logicalOffsetX
-            //   y_swap = -y_user = -scaleY * y_in - logicalOffsetY
-            push.transform[0] = -scaleX;
-            push.transform[1] = 0.0f;
-            push.transform[2] = 0.0f;
-            push.transform[3] = -scaleY;
-            push.offset[0] = -logicalOffsetX;
-            push.offset[1] = -logicalOffsetY;
+            cosTheta = -1.0f;
+            sinTheta = 0.0f;
             break;
         case VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR:
-            // Display hardware rotates buffer +270 deg clockwise (-90 deg CCW).
-            // Pre-rotate +90 deg clockwise to compensate:
-            //   x_swap = -y_user = -scaleY * y_in - logicalOffsetY
-            //   y_swap =  x_user =  scaleX * x_in + logicalOffsetX
-            push.transform[0] = 0.0f;
-            push.transform[1] = scaleX;
-            push.transform[2] = -scaleY;
-            push.transform[3] = 0.0f;
-            push.offset[0] = -logicalOffsetY;
-            push.offset[1] = logicalOffsetX;
+            cosTheta = 0.0f;
+            sinTheta = -1.0f;
             break;
         case VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR:
         default:
-            push.transform[0] = scaleX;
-            push.transform[1] = 0.0f;
-            push.transform[2] = 0.0f;
-            push.transform[3] = scaleY;
-            push.offset[0] = logicalOffsetX;
-            push.offset[1] = logicalOffsetY;
+            cosTheta = 1.0f;
+            sinTheta = 0.0f;
             break;
     }
+
+    PushConstants push {};
+    // Matrix column 0 = (m00, m10), column 1 = (m01, m11)
+    push.transform[0] = scaleX * cosTheta;
+    push.transform[1] = scaleX * sinTheta;
+    push.transform[2] = -scaleY * sinTheta;
+    push.transform[3] = scaleY * cosTheta;
+
+    push.offset[0] = logicalOffsetX * cosTheta - logicalOffsetY * sinTheta;
+    push.offset[1] = logicalOffsetX * sinTheta + logicalOffsetY * cosTheta;
 
     VkCommandBuffer cmd = commandBuffers[currentFrame];
     vkResetCommandBuffer(cmd, 0);

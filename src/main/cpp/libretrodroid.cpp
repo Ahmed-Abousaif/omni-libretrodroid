@@ -570,7 +570,7 @@ void LibretroDroid::step() {
         s_prioritySet = true;
     }
 
-    std::lock_guard<std::mutex> lock(coreLock);
+    std::unique_lock<std::mutex> lock(coreLock);
     const auto stepStart = std::chrono::steady_clock::now();
 
     LOGD("Stepping into retro_run()");
@@ -638,10 +638,6 @@ void LibretroDroid::step() {
         ADPFManager::getInstance().reportActualDuration(workNanos);
     }
 
-    if (fpsSync) {
-        fpsSync->wait();
-    }
-
     if (rumble && rumbleEnabled) {
         rumble->fetchFromEnvironment();
     }
@@ -667,6 +663,13 @@ void LibretroDroid::step() {
         Environment::getInstance().clearScreenRotationUpdated();
 
         video->updateRotation(Environment::getInstance().getScreenRotation());
+    }
+
+    // Release coreLock before blocking on fpsSync->wait() so UI/input threads are not stalled during VSync idle wait.
+    lock.unlock();
+
+    if (fpsSync) {
+        fpsSync->wait();
     }
 }
 

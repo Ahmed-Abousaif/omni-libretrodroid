@@ -20,8 +20,13 @@
 
 #define MODULE_NAME "libretrodroid"
 
-#define VERBOSE_LOGGING true
-#define GLES_LOGGING true
+#ifdef NDEBUG
+#define VERBOSE_LOGGING 0
+#define GLES_LOGGING 0
+#else
+#define VERBOSE_LOGGING 1
+#define GLES_LOGGING 1
+#endif
 
 #if GLES_LOGGING
 #include <EGL/egl.h>
@@ -41,8 +46,8 @@
 
 #else
 
-#define LOGV(...)
-#define LOGD(...)
+#define LOGV(...) ((void)0)
+#define LOGD(...) ((void)0)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, MODULE_NAME, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, MODULE_NAME, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, MODULE_NAME, __VA_ARGS__)
@@ -52,7 +57,7 @@
 
 #if GLES_LOGGING
 
-static void MessageCallback(
+[[maybe_unused]] static void MessageCallback(
     GLenum source,
     GLenum type,
     GLuint id,
@@ -69,7 +74,7 @@ static void MessageCallback(
     }
 }
 
-static bool initializeGLESLogCallbackIfNeeded() {
+[[maybe_unused]] inline bool initializeGLESLogCallbackIfNeeded() {
     auto debugCallback = (void (*)(void *, void *)) eglGetProcAddress("glDebugMessageCallback");
     if (debugCallback) {
         glEnable(GL_DEBUG_OUTPUT);
@@ -80,7 +85,7 @@ static bool initializeGLESLogCallbackIfNeeded() {
 
 #else
 
-static bool initializeGLESLogCallbackIfNeeded() {
+[[maybe_unused]] inline bool initializeGLESLogCallbackIfNeeded() {
     return false;
 }
 

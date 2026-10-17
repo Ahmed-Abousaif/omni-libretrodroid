@@ -41,7 +41,10 @@ typedef void (VKAPI_PTR *PFN_vkGetPhysicalDeviceMemoryProperties2)(VkPhysicalDev
 
 namespace libretrodroid {
 
-VulkanContext::VulkanContext() = default;
+VulkanContext::VulkanContext() {
+    waitSemaphores.reserve(16);
+    coreCommandBuffers.reserve(16);
+}
 
 VulkanContext::~VulkanContext() {
     deinitialize();
@@ -828,14 +831,18 @@ void VulkanContext::setImage(
     }
     waitSemaphores.clear();
     if (numSemaphores > 0 && semaphores != nullptr) {
-        waitSemaphores.assign(semaphores, semaphores + numSemaphores);
+        for (uint32_t i = 0; i < numSemaphores; ++i) {
+            waitSemaphores.push_back(semaphores[i]);
+        }
     }
 }
 
 void VulkanContext::setCommandBuffers(uint32_t numCmd, const VkCommandBuffer* cmd) {
     coreCommandBuffers.clear();
     if (numCmd > 0 && cmd != nullptr) {
-        coreCommandBuffers.assign(cmd, cmd + numCmd);
+        for (uint32_t i = 0; i < numCmd; ++i) {
+            coreCommandBuffers.push_back(cmd[i]);
+        }
     }
 }
 

@@ -67,6 +67,7 @@ private:
         float transform[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
         float offset[2] = { 0.0f, 0.0f };
     };
+    void recomputePushConstants();
 
 private:
     bool initialized = false;
@@ -103,11 +104,15 @@ private:
     VkSampler lastBoundSampler[3] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
     VkImageLayout lastBoundImageLayout[3] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
 
-    VkCommandPool commandPool = VK_NULL_HANDLE;
-    std::vector<VkCommandBuffer> commandBuffers;
-
     // Matches VulkanContext::MAX_SYNC_INDEX.
     static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
+
+    // Per-frame-in-flight transient command pools (fast pool reset, zero allocator fragmentation)
+    VkCommandPool commandPools[MAX_FRAMES_IN_FLIGHT] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkCommandBuffer commandBuffers[MAX_FRAMES_IN_FLIGHT] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+
+    PushConstants cachedPush {};
+    bool pushConstantsDirty = true;
     uint32_t currentFrame = 0;
     bool allowMailbox = false;
     bool usingMailbox = false;

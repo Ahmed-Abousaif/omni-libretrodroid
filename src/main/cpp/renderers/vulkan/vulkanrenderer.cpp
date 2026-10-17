@@ -321,9 +321,12 @@ void VulkanRenderer::deinitialize() {
         }
         destroyRenderFinishedSemaphores();
 
-        if (commandPool != VK_NULL_HANDLE) {
-            vkDestroyCommandPool(device, commandPool, nullptr);
-            commandPool = VK_NULL_HANDLE;
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+            if (commandPools[i] != VK_NULL_HANDLE) {
+                vkDestroyCommandPool(device, commandPools[i], nullptr);
+                commandPools[i] = VK_NULL_HANDLE;
+                commandBuffers[i] = VK_NULL_HANDLE;
+            }
         }
 
         if (samplerLinear != VK_NULL_HANDLE) {
@@ -405,6 +408,7 @@ void VulkanRenderer::updateScreenSize(uint32_t width, uint32_t height) {
     if (sizeChanged) {
         screenWidth = width;
         screenHeight = height;
+        pushConstantsDirty = true;
     }
     if (initialized && (sizeChanged || surfaceMismatch())) {
         waitQueueIdleLocked();
@@ -414,17 +418,22 @@ void VulkanRenderer::updateScreenSize(uint32_t width, uint32_t height) {
 }
 
 void VulkanRenderer::updateAspectRatio(float aspectRatio) {
-    if (aspectRatio > 0.0f) {
+    if (aspectRatio > 0.0f && currentAspectRatio != aspectRatio) {
         currentAspectRatio = aspectRatio;
+        pushConstantsDirty = true;
     }
 }
 
 void VulkanRenderer::updateViewport(Rect viewport) {
     currentViewport = viewport;
+    pushConstantsDirty = true;
 }
 
 void VulkanRenderer::updateViewportAlignment(unsigned int alignment) {
-    viewportAlignment = alignment;
+    if (viewportAlignment != alignment) {
+        viewportAlignment = alignment;
+        pushConstantsDirty = true;
+    }
 }
 
 std::pair<float, float> VulkanRenderer::getRelativePosition(float touchX, float touchY) {
@@ -647,6 +656,7 @@ bool VulkanRenderer::createSwapchain() {
     }
 
     ensureRenderFinishedSemaphores(actualImageCount);
+    pushConstantsDirty = true;
     return true;
 }
 
@@ -957,25 +967,26 @@ bool VulkanRenderer::createCommandBuffers() {
     VkCommandPoolCreateInfo cpInfo {};
     cpInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cpInfo.queueFamilyIndex = queueFamilyIndex;
-    cpInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    cpInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
 
-    VkResult res = vkCreateCommandPool(device, &cpInfo, nullptr, &commandPool);
-    if (res != VK_SUCCESS) {
-        LOGE("vkCreateCommandPool failed: %d", res);
-        return false;
-    }
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        VkResult res = vkCreateCommandPool(device, &cpInfo, nullptr, &commandPools[i]);
+        if (res != VK_SUCCESS) {
+            LOGE("vkCreateCommandPool failed for frame %u: %d", i, res);
+            return false;
+        }
 
-    commandBuffers.resize(MAX_FRAMES_IN_FLIGHT);
-    VkCommandBufferAllocateInfo cbai {};
-    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cbai.commandPool = commandPool;
-    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cbai.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
+        VkCommandBufferAllocateInfo cbai {};
+        cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cbai.commandPool = commandPools[i];
+        cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbai.commandBufferCount = 1;
 
-    res = vkAllocateCommandBuffers(device, &cbai, commandBuffers.data());
-    if (res != VK_SUCCESS) {
-        LOGE("vkAllocateCommandBuffers failed: %d", res);
-        return false;
+        res = vkAllocateCommandBuffers(device, &cbai, &commandBuffers[i]);
+        if (res != VK_SUCCESS) {
+            LOGE("vkAllocateCommandBuffers failed for frame %u: %d", i, res);
+            return false;
+        }
     }
 
     return true;
@@ -994,6 +1005,77 @@ bool VulkanRenderer::createSyncObjects() {
         }
     }
     return true;
+}
+
+void VulkanRenderer::recomputePushConstants() {
+    // Calculate display dimensions in user logical space
+    float displayW = static_cast<float>(screenWidth > 0 ? screenWidth : swapchainExtent.width);
+    float displayH = static_cast<float>(screenHeight > 0 ? screenHeight : swapchainExtent.height);
+    if (screenWidth == 0 || screenHeight == 0) {
+        if (currentTransform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
+            displayW = static_cast<float>(swapchainExtent.height);
+            displayH = static_cast<float>(swapchainExtent.width);
+        }
+    }
+
+    float targetAspect = currentAspectRatio > 0.0f ? currentAspectRatio : (4.0f / 3.0f);
+
+    float vpW = displayW * currentViewport.getWidth();
+    float vpH = displayH * currentViewport.getHeight();
+    float vpAspect = vpW / (vpH > 0.0f ? vpH : 1.0f);
+
+    float scaleX = currentViewport.getWidth();
+    float scaleY = currentViewport.getHeight();
+
+    if (targetAspect > vpAspect) {
+        // Content is wider than viewport: letterbox vertically
+        scaleY *= (vpAspect / targetAspect);
+    } else {
+        // Content is taller than viewport: pillarbox horizontally
+        scaleX *= (targetAspect / vpAspect);
+    }
+
+    float logicalOffsetX = (currentViewport.getX() * 2.0f) - (1.0f - currentViewport.getWidth());
+    float logicalOffsetY = (currentViewport.getY() * 2.0f) - (1.0f - currentViewport.getHeight());
+
+    float emptyVerticalSpace = currentViewport.getHeight() - scaleY;
+    if (viewportAlignment == 1 /* V_ALIGN_TOP */) {
+        logicalOffsetY -= emptyVerticalSpace;
+    } else if (viewportAlignment == 2 /* V_ALIGN_BOTTOM */) {
+        logicalOffsetY += emptyVerticalSpace;
+    }
+
+    float cosTheta = 1.0f;
+    float sinTheta = 0.0f;
+
+    switch (currentTransform) {
+        case VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR:
+            cosTheta = 0.0f;
+            sinTheta = 1.0f;
+            break;
+        case VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR:
+            cosTheta = -1.0f;
+            sinTheta = 0.0f;
+            break;
+        case VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR:
+            cosTheta = 0.0f;
+            sinTheta = -1.0f;
+            break;
+        case VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR:
+        default:
+            cosTheta = 1.0f;
+            sinTheta = 0.0f;
+            break;
+    }
+
+    // Matrix column 0 = (m00, m10), column 1 = (m01, m11)
+    cachedPush.transform[0] = scaleX * cosTheta;
+    cachedPush.transform[1] = scaleX * sinTheta;
+    cachedPush.transform[2] = -scaleY * sinTheta;
+    cachedPush.transform[3] = scaleY * cosTheta;
+
+    cachedPush.offset[0] = logicalOffsetX * cosTheta - logicalOffsetY * sinTheta;
+    cachedPush.offset[1] = logicalOffsetX * sinTheta + logicalOffsetY * cosTheta;
 }
 
 bool VulkanRenderer::renderFrame() {
@@ -1110,78 +1192,13 @@ bool VulkanRenderer::renderFrame() {
         }
     }
 
-    // Calculate display dimensions in user logical space
-    float displayW = static_cast<float>(screenWidth > 0 ? screenWidth : swapchainExtent.width);
-    float displayH = static_cast<float>(screenHeight > 0 ? screenHeight : swapchainExtent.height);
-    if (screenWidth == 0 || screenHeight == 0) {
-        if (currentTransform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
-            displayW = static_cast<float>(swapchainExtent.height);
-            displayH = static_cast<float>(swapchainExtent.width);
-        }
+    if (pushConstantsDirty) {
+        recomputePushConstants();
+        pushConstantsDirty = false;
     }
-
-    float targetAspect = currentAspectRatio > 0.0f ? currentAspectRatio : (4.0f / 3.0f);
-
-    float vpW = displayW * currentViewport.getWidth();
-    float vpH = displayH * currentViewport.getHeight();
-    float vpAspect = vpW / (vpH > 0.0f ? vpH : 1.0f);
-
-    float scaleX = currentViewport.getWidth();
-    float scaleY = currentViewport.getHeight();
-
-    if (targetAspect > vpAspect) {
-        // Content is wider than viewport: letterbox vertically
-        scaleY *= (vpAspect / targetAspect);
-    } else {
-        // Content is taller than viewport: pillarbox horizontally
-        scaleX *= (targetAspect / vpAspect);
-    }
-
-    float logicalOffsetX = (currentViewport.getX() * 2.0f) - (1.0f - currentViewport.getWidth());
-    float logicalOffsetY = (currentViewport.getY() * 2.0f) - (1.0f - currentViewport.getHeight());
-
-    float emptyVerticalSpace = currentViewport.getHeight() - scaleY;
-    if (viewportAlignment == 1 /* V_ALIGN_TOP */) {
-        logicalOffsetY -= emptyVerticalSpace;
-    } else if (viewportAlignment == 2 /* V_ALIGN_BOTTOM */) {
-        logicalOffsetY += emptyVerticalSpace;
-    }
-
-    float cosTheta = 1.0f;
-    float sinTheta = 0.0f;
-
-    switch (currentTransform) {
-        case VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR:
-            cosTheta = 0.0f;
-            sinTheta = 1.0f;
-            break;
-        case VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR:
-            cosTheta = -1.0f;
-            sinTheta = 0.0f;
-            break;
-        case VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR:
-            cosTheta = 0.0f;
-            sinTheta = -1.0f;
-            break;
-        case VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR:
-        default:
-            cosTheta = 1.0f;
-            sinTheta = 0.0f;
-            break;
-    }
-
-    PushConstants push {};
-    // Matrix column 0 = (m00, m10), column 1 = (m01, m11)
-    push.transform[0] = scaleX * cosTheta;
-    push.transform[1] = scaleX * sinTheta;
-    push.transform[2] = -scaleY * sinTheta;
-    push.transform[3] = scaleY * cosTheta;
-
-    push.offset[0] = logicalOffsetX * cosTheta - logicalOffsetY * sinTheta;
-    push.offset[1] = logicalOffsetX * sinTheta + logicalOffsetY * cosTheta;
 
     VkCommandBuffer cmd = commandBuffers[currentFrame];
-    vkResetCommandBuffer(cmd, 0);
+    vkResetCommandPool(device, commandPools[currentFrame], 0);
 
     VkCommandBufferBeginInfo bi {};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -1244,7 +1261,7 @@ bool VulkanRenderer::renderFrame() {
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
-        vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &push);
+        vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &cachedPush);
         vkCmdDraw(cmd, 6, 1, 0, 0);
     }
 
@@ -1257,45 +1274,55 @@ bool VulkanRenderer::renderFrame() {
 
     vkEndCommandBuffer(cmd);
 
-    // Build wait and signal semaphores
-    std::vector<VkSemaphore> waitSems;
-    std::vector<VkPipelineStageFlags> waitStages;
+    // Build wait and signal semaphores using fixed-size stack arrays (zero per-frame heap allocations)
+    constexpr size_t MAX_SUBMIT_SEMAPHORES = 16;
+    constexpr size_t MAX_SUBMIT_CMD_BUFFERS = 16;
 
-    waitSems.push_back(imageAvailableSemaphores[currentFrame]);
-    waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    VkSemaphore waitSems[MAX_SUBMIT_SEMAPHORES];
+    VkPipelineStageFlags waitStages[MAX_SUBMIT_SEMAPHORES];
+    uint32_t waitCount = 0;
 
-    for (auto sem : VulkanContext::getInstance().getWaitSemaphores()) {
-        if (sem != VK_NULL_HANDLE) {
-            waitSems.push_back(sem);
-            waitStages.push_back(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    waitSems[waitCount] = imageAvailableSemaphores[currentFrame];
+    waitStages[waitCount] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    waitCount++;
+
+    const auto& contextWaitSems = VulkanContext::getInstance().getWaitSemaphores();
+    for (auto sem : contextWaitSems) {
+        if (sem != VK_NULL_HANDLE && waitCount < MAX_SUBMIT_SEMAPHORES) {
+            waitSems[waitCount] = sem;
+            waitStages[waitCount] = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            waitCount++;
         }
     }
 
-    std::vector<VkSemaphore> signalSems;
-    signalSems.push_back(renderFinishedSemaphores[imageIndex]);
+    VkSemaphore signalSems[MAX_SUBMIT_SEMAPHORES];
+    uint32_t signalCount = 0;
+    signalSems[signalCount++] = renderFinishedSemaphores[imageIndex];
 
     VkSemaphore coreSignal = VulkanContext::getInstance().getSignalSemaphore();
-    if (coreSignal != VK_NULL_HANDLE) {
-        signalSems.push_back(coreSignal);
+    if (coreSignal != VK_NULL_HANDLE && signalCount < MAX_SUBMIT_SEMAPHORES) {
+        signalSems[signalCount++] = coreSignal;
     }
 
-    std::vector<VkCommandBuffer> allCmdBuffers;
-    for (auto coreCmd : VulkanContext::getInstance().getCoreCommandBuffers()) {
-        if (coreCmd != VK_NULL_HANDLE) {
-            allCmdBuffers.push_back(coreCmd);
+    VkCommandBuffer allCmdBuffers[MAX_SUBMIT_CMD_BUFFERS];
+    uint32_t cmdCount = 0;
+    const auto& contextCmds = VulkanContext::getInstance().getCoreCommandBuffers();
+    for (auto coreCmd : contextCmds) {
+        if (coreCmd != VK_NULL_HANDLE && cmdCount < (MAX_SUBMIT_CMD_BUFFERS - 1)) {
+            allCmdBuffers[cmdCount++] = coreCmd;
         }
     }
-    allCmdBuffers.push_back(cmd);
+    allCmdBuffers[cmdCount++] = cmd;
 
     VkSubmitInfo si {};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.waitSemaphoreCount = static_cast<uint32_t>(waitSems.size());
-    si.pWaitSemaphores = waitSems.data();
-    si.pWaitDstStageMask = waitStages.data();
-    si.commandBufferCount = static_cast<uint32_t>(allCmdBuffers.size());
-    si.pCommandBuffers = allCmdBuffers.data();
-    si.signalSemaphoreCount = static_cast<uint32_t>(signalSems.size());
-    si.pSignalSemaphores = signalSems.data();
+    si.waitSemaphoreCount = waitCount;
+    si.pWaitSemaphores = waitSems;
+    si.pWaitDstStageMask = waitStages;
+    si.commandBufferCount = cmdCount;
+    si.pCommandBuffers = allCmdBuffers;
+    si.signalSemaphoreCount = signalCount;
+    si.pSignalSemaphores = signalSems;
 
     VkFence currentSyncFence = VulkanContext::getInstance().getCurrentSyncFence();
     VkQueue queue = VulkanContext::getInstance().getQueue();

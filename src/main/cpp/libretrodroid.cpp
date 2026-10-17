@@ -239,6 +239,9 @@ void LibretroDroid::onSurfaceCreated() {
             return;
         }
         vulkanRenderer = std::make_unique<VulkanRenderer>();
+        if (!cacheDirectory.empty()) {
+            vulkanRenderer->setCacheDirectory(cacheDirectory);
+        }
         vulkanRenderer->initialize();
         auto shaders = ShaderManager::getShader(fragmentShaderConfig);
         vulkanRenderer->setLinearFiltering(shaders.linearTexture);
@@ -553,6 +556,10 @@ void LibretroDroid::pause() {
     LOGD("Performing libretrodroid pause");
     audio->stop();
 
+    if (vulkanRenderer) {
+        vulkanRenderer->savePipelineCache();
+    }
+
     input = nullptr;
 }
 
@@ -706,6 +713,13 @@ void LibretroDroid::setShaderConfig(ShaderManager::Config shaderConfig) {
     if (vulkanRenderer) {
         auto shaders = ShaderManager::getShader(fragmentShaderConfig);
         vulkanRenderer->setLinearFiltering(shaders.linearTexture);
+    }
+}
+
+void LibretroDroid::setCacheDirectory(const std::string& cacheDir) {
+    this->cacheDirectory = cacheDir;
+    if (vulkanRenderer) {
+        vulkanRenderer->setCacheDirectory(cacheDir);
     }
 }
 

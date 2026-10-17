@@ -632,6 +632,17 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setShaderC
     LibretroDroid::getInstance().setShaderConfig(JavaUtils::shaderFromJava(env, shaderConfig));
 }
 
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setCacheDirectory(
+    JNIEnv* env,
+    jclass obj,
+    jstring cacheDir
+) {
+    if (cacheDir != nullptr) {
+        auto cd = JniString(env, cacheDir);
+        LibretroDroid::getInstance().setCacheDirectory(cd.stdString());
+    }
+}
+
 JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setViewport(
     JNIEnv* env,
     jclass obj,

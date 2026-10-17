@@ -32,6 +32,9 @@ public:
     void setLinearFiltering(bool linear);
     bool isLinearFiltering() const { return useLinearFiltering; }
 
+    void setCacheDirectory(const std::string& dir);
+    void savePipelineCache();
+
     bool renderFrame();
 
     std::pair<float, float> getRelativePosition(float touchX, float touchY);
@@ -41,6 +44,9 @@ public:
     bool isReady() const { return initialized && swapchain != VK_NULL_HANDLE; }
 
 private:
+    bool initPipelineCache();
+    void destroyPipelineCache();
+    std::string getPipelineCacheFilePath() const;
     bool createSwapchain();
     void destroySwapchain();
     bool createRenderPass();
@@ -80,7 +86,10 @@ private:
     VkRenderPass renderPass = VK_NULL_HANDLE;
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipelineCache pipelineCache = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
+    std::string cacheDirectory;
+    bool pipelineCacheDirty = false;
 
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> descriptorSets;

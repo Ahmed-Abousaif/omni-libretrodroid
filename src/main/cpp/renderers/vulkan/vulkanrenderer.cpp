@@ -2,6 +2,9 @@
 #include <algorithm>
 #include <cstring>
 #include <chrono>
+#include <fstream>
+#include <cstdio>
+#include "../../environment.h"
 #include "../../stats.h"
 
 namespace libretrodroid {
@@ -42,6 +45,8 @@ bool VulkanRenderer::initialize() {
         LOGE("Failed to recreate Vulkan swapchain framebuffers");
         return false;
     }
+
+    initPipelineCache();
 
     if (!createPipeline()) {
         LOGE("Failed to create Vulkan graphics pipeline");
@@ -94,6 +99,150 @@ void VulkanRenderer::setLinearFiltering(bool linear) {
         useLinearFiltering = linear;
         LOGI("VulkanRenderer filtering updated to %s", linear ? "LINEAR" : "NEAREST");
     }
+}
+
+void VulkanRenderer::setCacheDirectory(const std::string& dir) {
+    cacheDirectory = dir;
+}
+
+std::string VulkanRenderer::getPipelineCacheFilePath() const {
+    std::string baseDir = cacheDirectory;
+    if (baseDir.empty()) {
+        baseDir = Environment::getInstance().getSavesDirectory();
+    }
+    if (baseDir.empty()) {
+        return "";
+    }
+    if (baseDir.back() != '/' && baseDir.back() != '\\') {
+        baseDir += "/";
+    }
+    return baseDir + "vulkan_pipeline_cache.bin";
+}
+
+bool VulkanRenderer::initPipelineCache() {
+    VkPhysicalDevice gpu = VulkanContext::getInstance().getGpu();
+    VkDevice device = VulkanContext::getInstance().getDevice();
+    if (gpu == VK_NULL_HANDLE || device == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    if (pipelineCache != VK_NULL_HANDLE) {
+        return true;
+    }
+
+    VkPhysicalDeviceProperties props {};
+    vkGetPhysicalDeviceProperties(gpu, &props);
+
+    std::vector<uint8_t> cacheData;
+    std::string path = getPipelineCacheFilePath();
+
+    if (!path.empty()) {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (file.is_open()) {
+            std::streamsize size = file.tellg();
+            if (size >= static_cast<std::streamsize>(sizeof(VkPipelineCacheHeaderVersionOne))) {
+                file.seekg(0, std::ios::beg);
+                cacheData.resize(static_cast<size_t>(size));
+                if (file.read(reinterpret_cast<char*>(cacheData.data()), size)) {
+                    const auto* header = reinterpret_cast<const VkPipelineCacheHeaderVersionOne*>(cacheData.data());
+                    bool valid = (header->headerSize >= sizeof(VkPipelineCacheHeaderVersionOne)) &&
+                                 (header->headerVersion == VK_PIPELINE_CACHE_HEADER_VERSION_ONE) &&
+                                 (header->vendorID == props.vendorID) &&
+                                 (header->deviceID == props.deviceID) &&
+                                 (memcmp(header->pipelineCacheUUID, props.pipelineCacheUUID, VK_UUID_SIZE) == 0);
+                    if (valid) {
+                        LOGI("Loaded valid Vulkan pipeline cache from %s (%zu bytes)", path.c_str(), cacheData.size());
+                    } else {
+                        LOGW("Stale or invalid Vulkan pipeline cache in %s (vendor=0x%x vs 0x%x, device=0x%x vs 0x%x). Discarding.",
+                             path.c_str(), header->vendorID, props.vendorID, header->deviceID, props.deviceID);
+                        cacheData.clear();
+                        file.close();
+                        std::remove(path.c_str());
+                    }
+                } else {
+                    cacheData.clear();
+                }
+            } else {
+                LOGW("Vulkan pipeline cache file %s too small (%zu bytes). Discarding.", path.c_str(), static_cast<size_t>(size));
+                cacheData.clear();
+                file.close();
+                std::remove(path.c_str());
+            }
+        }
+    }
+
+    VkPipelineCacheCreateInfo pci {};
+    pci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    if (!cacheData.empty()) {
+        pci.initialDataSize = cacheData.size();
+        pci.pInitialData = cacheData.data();
+    }
+
+    VkResult res = vkCreatePipelineCache(device, &pci, nullptr, &pipelineCache);
+    if (res != VK_SUCCESS) {
+        LOGW("vkCreatePipelineCache with initial data failed: %d. Retrying with empty cache.", res);
+        pci.initialDataSize = 0;
+        pci.pInitialData = nullptr;
+        res = vkCreatePipelineCache(device, &pci, nullptr, &pipelineCache);
+        if (res != VK_SUCCESS) {
+            LOGE("vkCreatePipelineCache failed: %d", res);
+            pipelineCache = VK_NULL_HANDLE;
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void VulkanRenderer::savePipelineCache() {
+    VkDevice device = VulkanContext::getInstance().getDevice();
+    if (device == VK_NULL_HANDLE || pipelineCache == VK_NULL_HANDLE || !pipelineCacheDirty) {
+        return;
+    }
+
+    size_t dataSize = 0;
+    VkResult res = vkGetPipelineCacheData(device, pipelineCache, &dataSize, nullptr);
+    if (res != VK_SUCCESS || dataSize <= sizeof(VkPipelineCacheHeaderVersionOne)) {
+        return;
+    }
+
+    std::vector<uint8_t> data(dataSize);
+    res = vkGetPipelineCacheData(device, pipelineCache, &dataSize, data.data());
+    if (res != VK_SUCCESS) {
+        LOGE("vkGetPipelineCacheData failed: %d", res);
+        return;
+    }
+
+    std::string path = getPipelineCacheFilePath();
+    if (path.empty()) {
+        return;
+    }
+
+    std::string tmpPath = path + ".tmp";
+    std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+        LOGW("Failed to open temporary pipeline cache file %s for writing", tmpPath.c_str());
+        return;
+    }
+
+    out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(dataSize));
+    out.close();
+
+    if (std::rename(tmpPath.c_str(), path.c_str()) != 0) {
+        LOGW("Failed to rename temporary pipeline cache to %s", path.c_str());
+    } else {
+        LOGI("Persisted Vulkan pipeline cache to %s (%.2f KB)", path.c_str(), dataSize / 1024.0f);
+        pipelineCacheDirty = false;
+    }
+}
+
+void VulkanRenderer::destroyPipelineCache() {
+    VkDevice device = VulkanContext::getInstance().getDevice();
+    if (device != VK_NULL_HANDLE && pipelineCache != VK_NULL_HANDLE) {
+        vkDestroyPipelineCache(device, pipelineCache, nullptr);
+        pipelineCache = VK_NULL_HANDLE;
+    }
+    pipelineCacheDirty = false;
 }
 
 void VulkanRenderer::destroyRenderFinishedSemaphores() {
@@ -169,6 +318,9 @@ void VulkanRenderer::deinitialize() {
             vkDestroyDescriptorPool(device, descriptorPool, nullptr);
             descriptorPool = VK_NULL_HANDLE;
         }
+
+        savePipelineCache();
+        destroyPipelineCache();
 
         if (pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device, pipeline, nullptr);
@@ -672,7 +824,7 @@ bool VulkanRenderer::createPipeline() {
     pipelineInfo.subpass = 0;
 
     auto compileStart = std::chrono::steady_clock::now();
-    res = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+    res = vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &pipeline);
     auto compileEnd = std::chrono::steady_clock::now();
     vkDestroyShaderModule(device, vertModule, nullptr);
     vkDestroyShaderModule(device, fragModule, nullptr);
@@ -681,6 +833,7 @@ bool VulkanRenderer::createPipeline() {
         LOGE("vkCreateGraphicsPipelines failed: %d", res);
         return false;
     }
+    pipelineCacheDirty = true;
     double compileMs = std::chrono::duration<double, std::milli>(compileEnd - compileStart).count();
     LRDStats::notePipelineCompile(compileMs);
     LOGI("Compiled Vulkan graphics pipeline in %.2f ms", compileMs);

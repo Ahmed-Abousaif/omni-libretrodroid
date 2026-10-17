@@ -108,6 +108,9 @@ public:
 
     const std::vector<std::vector<struct Controller>> &getControllers() const;
 
+    const std::string& getSavesDirectory() const { return savesDirectory; }
+    const std::string& getSystemDirectory() const { return systemDirectory; }
+
 private:
     bool environment_handle_set_variables(const struct retro_variable* received);
     bool environment_handle_get_variable(struct retro_variable* requested);

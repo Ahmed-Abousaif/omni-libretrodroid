@@ -297,8 +297,14 @@ void LibretroDroid::onMotionEvent(
 
 void LibretroDroid::onTouchEvent(float xAxis, float yAxis) {
     LOGD("Received touch event: %.2f, %.2f", xAxis, yAxis);
-    if (input && video) {
+    if (!input) {
+        return;
+    }
+    if (video) {
         auto [x, y] = video->getLayout().getRelativePosition(xAxis, yAxis);
+        input->onMotionEvent(0, Input::MOTION_SOURCE_POINTER, x, y);
+    } else if (vulkanRenderer) {
+        auto [x, y] = vulkanRenderer->getRelativePosition(xAxis, yAxis);
         input->onMotionEvent(0, Input::MOTION_SOURCE_POINTER, x, y);
     }
 }
@@ -564,29 +570,43 @@ void LibretroDroid::step() {
         frames = allowFrameCatchUp ? std::min(requestedFrames, 2u) : 1u;
     }
 
-#ifndef NDEBUG
-    const auto runStart = std::chrono::steady_clock::now();
-#endif
+    const bool profiling = LRDStats::isProfilingEnabled();
+    std::chrono::steady_clock::time_point runStart;
+    if (profiling) {
+        runStart = std::chrono::steady_clock::now();
+    }
+
     for (size_t i = 0; i < frames * frameSpeed; i++)
         core->retro_run();
-#ifndef NDEBUG
-    const auto runEnd = std::chrono::steady_clock::now();
-#endif
 
+    std::chrono::steady_clock::time_point renderStart;
+    double runMs = 0.0;
+    if (profiling) {
+        auto runEnd = std::chrono::steady_clock::now();
+        runMs = std::chrono::duration<double, std::milli>(runEnd - runStart).count();
+        renderStart = std::chrono::steady_clock::now();
+    }
+
+    double gpuTimeMs = -1.0;
     if (vulkanRenderer) {
         vulkanRenderer->renderFrame();
+        if (profiling) {
+            gpuTimeMs = vulkanRenderer->getLastGpuTimeMs();
+        }
     } else if (video && !video->rendersInVideoCallback()) {
         video->renderFrame();
     }
 
-#ifndef NDEBUG
-    static thread_local auto lastPresent = std::chrono::steady_clock::now();
-    const auto now = std::chrono::steady_clock::now();
-    const double runMs = std::chrono::duration<double, std::milli>(runEnd - runStart).count();
-    const double presentIntervalMs = std::chrono::duration<double, std::milli>(now - lastPresent).count();
-    lastPresent = now;
-    LRDStats::noteStep(runMs, presentIntervalMs);
-#endif
+    if (profiling) {
+        const auto now = std::chrono::steady_clock::now();
+        const double renderMs = std::chrono::duration<double, std::milli>(now - renderStart).count();
+        static thread_local auto lastPresent = std::chrono::steady_clock::now();
+        const double presentIntervalMs = std::chrono::duration<double, std::milli>(now - lastPresent).count();
+        lastPresent = now;
+
+        const double targetIntervalMs = screenRefreshRate > 0.0f ? (1000.0 / screenRefreshRate) : 16.67;
+        LRDStats::noteFrame(runMs, renderMs, gpuTimeMs, presentIntervalMs, targetIntervalMs);
+    }
 
     if (fpsSync) {
         fpsSync->wait();

@@ -149,4 +149,9 @@ public class LibretroDroid {
 
     public static native Controller[][] getControllers();
     public static native void setControllerType(int port, int type);
+
+    public static native void setProfilingEnabled(boolean enabled);
+    public static native boolean isProfilingEnabled();
+    public static native double[] getProfilingStats();
 }
+

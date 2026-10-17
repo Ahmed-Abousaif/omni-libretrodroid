@@ -1,6 +1,8 @@
 #include "vulkanrenderer.h"
 #include <algorithm>
 #include <cstring>
+#include <chrono>
+#include "../../stats.h"
 
 namespace libretrodroid {
 
@@ -60,6 +62,8 @@ bool VulkanRenderer::initialize() {
         LOGE("Failed to create Vulkan sync objects");
         return false;
     }
+
+    initTimestampQueries();
 
     initialized = true;
     LOGI("VulkanRenderer successfully initialized!");
@@ -168,6 +172,8 @@ void VulkanRenderer::deinitialize() {
             renderPass = VK_NULL_HANDLE;
         }
 
+        cleanupTimestampQueries();
+
         destroySwapchain();
     }
 
@@ -221,6 +227,57 @@ void VulkanRenderer::updateViewport(Rect viewport) {
 
 void VulkanRenderer::updateViewportAlignment(unsigned int alignment) {
     viewportAlignment = alignment;
+}
+
+std::pair<float, float> VulkanRenderer::getRelativePosition(float touchX, float touchY) {
+    float displayW = static_cast<float>(screenWidth > 0 ? screenWidth : (swapchainExtent.width > 0 ? swapchainExtent.width : 1));
+    float displayH = static_cast<float>(screenHeight > 0 ? screenHeight : (swapchainExtent.height > 0 ? swapchainExtent.height : 1));
+    if (screenWidth == 0 || screenHeight == 0) {
+        if (currentTransform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
+            displayW = static_cast<float>(swapchainExtent.height > 0 ? swapchainExtent.height : 1);
+            displayH = static_cast<float>(swapchainExtent.width > 0 ? swapchainExtent.width : 1);
+        }
+    }
+
+    float targetAspect = currentAspectRatio > 0.0f ? currentAspectRatio : (4.0f / 3.0f);
+
+    float vpW = displayW * currentViewport.getWidth();
+    float vpH = displayH * currentViewport.getHeight();
+    float vpAspect = vpW / (vpH > 0.0f ? vpH : 1.0f);
+
+    float scaleX = currentViewport.getWidth();
+    float scaleY = currentViewport.getHeight();
+
+    if (targetAspect > vpAspect) {
+        scaleY *= (vpAspect / targetAspect);
+    } else {
+        scaleX *= (targetAspect / vpAspect);
+    }
+
+    float logicalOffsetX = (currentViewport.getX() * 2.0f) - (1.0f - currentViewport.getWidth());
+    float logicalOffsetY = (currentViewport.getY() * 2.0f) - (1.0f - currentViewport.getHeight());
+
+    float emptyVerticalSpace = currentViewport.getHeight() - scaleY;
+    if (viewportAlignment == 1 /* V_ALIGN_TOP */) {
+        logicalOffsetY -= emptyVerticalSpace;
+    } else if (viewportAlignment == 2 /* V_ALIGN_BOTTOM */) {
+        logicalOffsetY += emptyVerticalSpace;
+    }
+
+    float xMin = logicalOffsetX - scaleX;
+    float xMax = logicalOffsetX + scaleX;
+    float yMin = logicalOffsetY - scaleY;
+    float yMax = logicalOffsetY + scaleY;
+
+    if (xMax <= xMin || yMax <= yMin || touchX < xMin || touchX > xMax || touchY < yMin || touchY > yMax) {
+        return {-10.0f, -10.0f};
+    }
+
+    float relativeX = std::clamp((touchX - xMin) / (xMax - xMin), 0.0f, 1.0f);
+    float relativeY = std::clamp((touchY - yMin) / (yMax - yMin), 0.0f, 1.0f);
+
+    LOGD("Vulkan computed relative touch position: %.2f, %.2f", relativeX, relativeY);
+    return {relativeX, relativeY};
 }
 
 bool VulkanRenderer::createSwapchain() {
@@ -580,7 +637,9 @@ bool VulkanRenderer::createPipeline() {
     pipelineInfo.renderPass = renderPass;
     pipelineInfo.subpass = 0;
 
+    auto compileStart = std::chrono::steady_clock::now();
     res = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
+    auto compileEnd = std::chrono::steady_clock::now();
     vkDestroyShaderModule(device, vertModule, nullptr);
     vkDestroyShaderModule(device, fragModule, nullptr);
 
@@ -588,6 +647,9 @@ bool VulkanRenderer::createPipeline() {
         LOGE("vkCreateGraphicsPipelines failed: %d", res);
         return false;
     }
+    double compileMs = std::chrono::duration<double, std::milli>(compileEnd - compileStart).count();
+    LRDStats::notePipelineCompile(compileMs);
+    LOGI("Compiled Vulkan graphics pipeline in %.2f ms", compileMs);
     return true;
 }
 
@@ -714,6 +776,27 @@ bool VulkanRenderer::renderFrame() {
     // Wait on this slot's fence and reset it once. The core waits without resetting.
     VulkanContext::getInstance().waitAndResetSyncFence();
 
+    // Collect GPU timestamp query results from this slot's prior execution
+    if (timestampsSupported && timestampQueryPool != VK_NULL_HANDLE && queryInFlight[currentFrame]) {
+        uint64_t timestamps[2] = { 0, 0 };
+        VkResult queryRes = vkGetQueryPoolResults(
+            device,
+            timestampQueryPool,
+            currentFrame * 2,
+            2,
+            sizeof(timestamps),
+            timestamps,
+            sizeof(uint64_t),
+            VK_QUERY_RESULT_64_BIT
+        );
+        if (queryRes == VK_SUCCESS) {
+            uint64_t mask = (timestampValidBits == 64) ? ~0ULL : ((1ULL << timestampValidBits) - 1ULL);
+            uint64_t delta = (timestamps[1] - timestamps[0]) & mask;
+            lastGpuTimeMs = static_cast<double>(delta) * static_cast<double>(timestampPeriod) / 1e6;
+        }
+        queryInFlight[currentFrame] = false;
+    }
+
     uint32_t imageIndex = 0;
     VkResult res = vkAcquireNextImageKHR(
         device,
@@ -838,6 +921,11 @@ bool VulkanRenderer::renderFrame() {
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmd, &bi);
 
+    if (timestampsSupported && timestampQueryPool != VK_NULL_HANDLE) {
+        vkCmdResetQueryPool(cmd, timestampQueryPool, currentFrame * 2, 2);
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestampQueryPool, currentFrame * 2);
+    }
+
     VkClearValue clearColor = { {{ 0.0f, 0.0f, 0.0f, 1.0f }} };
     VkRenderPassBeginInfo rpbi {};
     rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -863,6 +951,12 @@ bool VulkanRenderer::renderFrame() {
     }
 
     vkCmdEndRenderPass(cmd);
+
+    if (timestampsSupported && timestampQueryPool != VK_NULL_HANDLE) {
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestampQueryPool, currentFrame * 2 + 1);
+        queryInFlight[currentFrame] = true;
+    }
+
     vkEndCommandBuffer(cmd);
 
     // Build wait and signal semaphores
@@ -949,4 +1043,60 @@ bool VulkanRenderer::renderFrame() {
     return true;
 }
 
+void VulkanRenderer::initTimestampQueries() {
+    VkPhysicalDevice gpu = VulkanContext::getInstance().getGpu();
+    VkDevice device = VulkanContext::getInstance().getDevice();
+    uint32_t queueFamilyIndex = VulkanContext::getInstance().getQueueFamilyIndex();
+    if (gpu == VK_NULL_HANDLE || device == VK_NULL_HANDLE) {
+        return;
+    }
+
+    VkPhysicalDeviceProperties props {};
+    vkGetPhysicalDeviceProperties(gpu, &props);
+    timestampPeriod = props.limits.timestampPeriod;
+
+    uint32_t queueCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(gpu, &queueCount, nullptr);
+    std::vector<VkQueueFamilyProperties> queueProps(queueCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(gpu, &queueCount, queueProps.data());
+
+    if (queueFamilyIndex < queueCount) {
+        timestampValidBits = queueProps[queueFamilyIndex].timestampValidBits;
+    }
+
+    timestampsSupported = (timestampValidBits > 0) && (timestampPeriod > 0.0f);
+    if (timestampsSupported) {
+        VkQueryPoolCreateInfo qpci {};
+        qpci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+        qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        qpci.queryCount = MAX_FRAMES_IN_FLIGHT * 2;
+        VkResult res = vkCreateQueryPool(device, &qpci, nullptr, &timestampQueryPool);
+        if (res != VK_SUCCESS) {
+            LOGW("Failed to create timestamp query pool: %d", res);
+            timestampsSupported = false;
+            timestampQueryPool = VK_NULL_HANDLE;
+        } else {
+            LOGI("Vulkan timestamp queries enabled (period: %.2f ns, valid bits: %u)",
+                 timestampPeriod, timestampValidBits);
+        }
+    } else {
+        LOGI("Vulkan timestamp queries not supported by device/queue (valid bits: %u, period: %.2f)",
+             timestampValidBits, timestampPeriod);
+    }
+}
+
+void VulkanRenderer::cleanupTimestampQueries() {
+    VkDevice device = VulkanContext::getInstance().getDevice();
+    if (device != VK_NULL_HANDLE && timestampQueryPool != VK_NULL_HANDLE) {
+        vkDestroyQueryPool(device, timestampQueryPool, nullptr);
+        timestampQueryPool = VK_NULL_HANDLE;
+    }
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        queryInFlight[i] = false;
+    }
+    lastGpuTimeMs = -1.0;
+    timestampsSupported = false;
+}
+
 } // namespace libretrodroid
+

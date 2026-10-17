@@ -38,6 +38,7 @@
 #include "input.h"
 #include "rumble.h"
 #include "shadermanager.h"
+#include "stats.h"
 #include "utils/javautils.h"
 #include "errorcodes.h"
 #include "environment.h"
@@ -657,6 +658,44 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_refreshAsp
     LibretroDroid::getInstance().refreshAspectRatio();
 }
 
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setProfilingEnabled(
+    JNIEnv* env,
+    jclass obj,
+    jboolean enabled
+) {
+    LRDStats::setProfilingEnabled(enabled);
+}
+
+JNIEXPORT jboolean JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_isProfilingEnabled(
+    JNIEnv* env,
+    jclass obj
+) {
+    return LRDStats::isProfilingEnabled();
+}
+
+JNIEXPORT jdoubleArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_getProfilingStats(
+    JNIEnv* env,
+    jclass obj
+) {
+    auto snapshot = LRDStats::getSnapshot();
+    jdoubleArray result = env->NewDoubleArray(10);
+    jdouble values[10] = {
+        snapshot.avgCpuRunMs,
+        snapshot.avgCpuRenderMs,
+        snapshot.avgGpuRenderMs,
+        snapshot.avgPresentIntervalMs,
+        snapshot.fps,
+        static_cast<double>(snapshot.droppedFrames),
+        static_cast<double>(snapshot.pipelineCompiles),
+        snapshot.pipelineCompileMs,
+        static_cast<double>(snapshot.memoryRssBytes) / (1024.0 * 1024.0),
+        static_cast<double>(snapshot.allocBytesPerFrame)
+    };
+    env->SetDoubleArrayRegion(result, 0, 10, values);
+    return result;
 }
 
 }
+
+}
+

@@ -5,6 +5,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <utility>
 
 #include "../../vulkan/vulkancontext.h"
 #include "../../vulkan/vulkanshaders.h"
@@ -30,6 +31,10 @@ public:
 
     bool renderFrame();
 
+    std::pair<float, float> getRelativePosition(float touchX, float touchY);
+
+    double getLastGpuTimeMs() const { return lastGpuTimeMs; }
+
     bool isReady() const { return initialized && swapchain != VK_NULL_HANDLE; }
 
 private:
@@ -44,6 +49,9 @@ private:
     void destroyRenderFinishedSemaphores();
     void waitQueueIdleLocked();
     bool surfaceMismatch() const;
+
+    void initTimestampQueries();
+    void cleanupTimestampQueries();
 
     struct PushConstants {
         float transform[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
@@ -87,6 +95,14 @@ private:
     VkSemaphore imageAvailableSemaphores[MAX_FRAMES_IN_FLIGHT] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
     // One present semaphore per swapchain image, not per frame-in-flight slot.
     std::vector<VkSemaphore> renderFinishedSemaphores;
+
+    // GPU timestamp profiling
+    VkQueryPool timestampQueryPool = VK_NULL_HANDLE;
+    float timestampPeriod = 0.0f;
+    uint32_t timestampValidBits = 0;
+    bool timestampsSupported = false;
+    double lastGpuTimeMs = -1.0;
+    bool queryInFlight[MAX_FRAMES_IN_FLIGHT] = { false, false, false };
 };
 
 } // namespace libretrodroid

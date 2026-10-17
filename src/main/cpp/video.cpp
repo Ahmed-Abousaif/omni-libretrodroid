@@ -199,7 +199,7 @@ void Video::renderFrame() {
     glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    if (immersiveModeEnabled) {
+    if (immersiveModeEnabled && renderer->getTexture() != 0) {
         immersiveMode.renderBackground(
             videoLayout.getScreenWidth(),
             videoLayout.getScreenHeight(),
@@ -208,6 +208,9 @@ void Video::renderFrame() {
             videoLayout.getFramebufferVertices().data(),
             renderer->getTexture()
         );
+        if (vao != 0) {
+            glBindVertexArray(vao);
+        }
     }
 
     updateProgram();

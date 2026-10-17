@@ -237,7 +237,7 @@ void VideoLayout::updateRelativeForegroundBounds() {
     float yMin = std::numeric_limits<float>::max();
     float yMax = std::numeric_limits<float>::lowest();
 
-    for (size_t i = 2; i < foregroundVertices.size(); i += 2) {
+    for (size_t i = 0; i < foregroundVertices.size(); i += 2) {
         xMin = std::min(xMin, foregroundVertices[i]);
         xMax = std::max(xMax, foregroundVertices[i]);
         yMin = std::min(yMin, (bottomLeftOrigin ? 1.0F : -1.0F) * foregroundVertices[i + 1]);

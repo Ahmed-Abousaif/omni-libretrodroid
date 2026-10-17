@@ -24,16 +24,81 @@
 
 namespace libretrodroid {
 
+static bool checkCompileStatus(GLuint shader, const char* name) {
+    GLint compiled = 0;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    if (!compiled) {
+        GLint infoLen = 0;
+        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &infoLen);
+        if (infoLen > 0) {
+            std::vector<char> infoLog(infoLen);
+            glGetShaderInfoLog(shader, infoLen, nullptr, infoLog.data());
+            LOGE("ImmersiveMode shader '%s' compilation error: %s", name, infoLog.data());
+        }
+        return false;
+    }
+    return true;
+}
+
+static bool checkLinkStatus(GLuint program, const char* name) {
+    GLint linked = 0;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        GLint infoLen = 0;
+        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &infoLen);
+        if (infoLen > 0) {
+            std::vector<char> infoLog(infoLen);
+            glGetProgramInfoLog(program, infoLen, nullptr, infoLog.data());
+            LOGE("ImmersiveMode program '%s' link error: %s", name, infoLog.data());
+        }
+        return false;
+    }
+    return true;
+}
+
+ImmersiveMode::~ImmersiveMode() {
+    if (vao != 0) {
+        glDeleteVertexArrays(1, &vao);
+        vao = 0;
+    }
+    if (vboPosition != 0) {
+        glDeleteBuffers(1, &vboPosition);
+        vboPosition = 0;
+    }
+    if (vboTexCoord != 0) {
+        glDeleteBuffers(1, &vboTexCoord);
+        vboTexCoord = 0;
+    }
+    if (blendShaderProgram != 0) {
+        glDeleteProgram(blendShaderProgram);
+        blendShaderProgram = 0;
+    }
+    if (blurShaderProgram != 0) {
+        glDeleteProgram(blurShaderProgram);
+        blurShaderProgram = 0;
+    }
+    if (displayShaderProgram != 0) {
+        glDeleteProgram(displayShaderProgram);
+        displayShaderProgram = 0;
+    }
+    for (auto& fb : blurFramebuffers) {
+        ES3Utils::deleteFramebuffer(std::move(fb));
+    }
+    blurFramebuffers.clear();
+}
+
 void ImmersiveMode::initializeShaders() {
     if (blendShaderProgram != 0) return;
 
     GLuint blendingVertexShader = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(blendingVertexShader, 1, &blendingVertexShaderSource, nullptr);
     glCompileShader(blendingVertexShader);
+    checkCompileStatus(blendingVertexShader, "blendingVertexShader");
 
     GLuint blendingFragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
     glShaderSource(blendingFragmentShader, 1, &blendingFragmentShaderSource, nullptr);
     glCompileShader(blendingFragmentShader);
+    checkCompileStatus(blendingFragmentShader, "blendingFragmentShader");
 
     blendShaderProgram = glCreateProgram();
     glAttachShader(blendShaderProgram, blendingVertexShader);
@@ -41,10 +106,13 @@ void ImmersiveMode::initializeShaders() {
     glBindAttribLocation(blendShaderProgram, 0, "aPosition");
     glBindAttribLocation(blendShaderProgram, 1, "aTexCoord");
     glLinkProgram(blendShaderProgram);
+    checkLinkStatus(blendShaderProgram, "blendShaderProgram");
 
     glDeleteShader(blendingVertexShader);
     glDeleteShader(blendingFragmentShader);
 
+    blendPositionHandle = glGetAttribLocation(blendShaderProgram, "aPosition");
+    blendTextureCoordinatesHandle = glGetAttribLocation(blendShaderProgram, "aTexCoord");
     blendTextureHandle = glGetUniformLocation(blendShaderProgram, "currentFrame");
     blendPrevTextureHandle = glGetUniformLocation(blendShaderProgram, "previousFrame");
     blendFactorHandle = glGetUniformLocation(blendShaderProgram, "blendFactor");
@@ -54,11 +122,13 @@ void ImmersiveMode::initializeShaders() {
     GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vertexShader, 1, &defaultVertexShaderSource, nullptr);
     glCompileShader(vertexShader);
+    checkCompileStatus(vertexShader, "blurVertexShader");
 
     GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
     const char* c_str = fragmentShaderSource.c_str();
     glShaderSource(fragmentShader, 1, &c_str, nullptr);
     glCompileShader(fragmentShader);
+    checkCompileStatus(fragmentShader, "blurFragmentShader");
 
     blurShaderProgram = glCreateProgram();
     glAttachShader(blurShaderProgram, vertexShader);
@@ -66,6 +136,7 @@ void ImmersiveMode::initializeShaders() {
     glBindAttribLocation(blurShaderProgram, 0, "aPosition");
     glBindAttribLocation(blurShaderProgram, 1, "aTexCoord");
     glLinkProgram(blurShaderProgram);
+    checkLinkStatus(blurShaderProgram, "blurShaderProgram");
 
     glDeleteShader(vertexShader);
     glDeleteShader(fragmentShader);
@@ -78,10 +149,12 @@ void ImmersiveMode::initializeShaders() {
     GLuint displayVertexShader = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(displayVertexShader, 1, &defaultVertexShaderSource, nullptr);
     glCompileShader(displayVertexShader);
+    checkCompileStatus(displayVertexShader, "displayVertexShader");
 
     GLuint displayFragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
     glShaderSource(displayFragmentShader, 1, &displayFragmentShaderSource, nullptr);
     glCompileShader(displayFragmentShader);
+    checkCompileStatus(displayFragmentShader, "displayFragmentShader");
 
     displayShaderProgram = glCreateProgram();
     glAttachShader(displayShaderProgram, displayVertexShader);
@@ -89,14 +162,28 @@ void ImmersiveMode::initializeShaders() {
     glBindAttribLocation(displayShaderProgram, 0, "aPosition");
     glBindAttribLocation(displayShaderProgram, 1, "aTexCoord");
     glLinkProgram(displayShaderProgram);
+    checkLinkStatus(displayShaderProgram, "displayShaderProgram");
 
     glDeleteShader(displayVertexShader);
     glDeleteShader(displayFragmentShader);
 
-    displayPositionHandle = glGetAttribLocation(blurShaderProgram, "aPosition");
+    displayPositionHandle = glGetAttribLocation(displayShaderProgram, "aPosition");
     displayForegroundBoundsHandle = glGetUniformLocation(displayShaderProgram, "foregroundBounds");
-    displayTextureCoordinatesHandle = glGetAttribLocation(blurShaderProgram, "aTexCoord");
+    displayTextureCoordinatesHandle = glGetAttribLocation(displayShaderProgram, "aTexCoord");
     displayTextureHandle = glGetUniformLocation(displayShaderProgram, "texture");
+
+    if (vao == 0) {
+        glGenVertexArrays(1, &vao);
+    }
+    if (vboPosition == 0) {
+        glGenBuffers(1, &vboPosition);
+    }
+    if (vboTexCoord == 0) {
+        glGenBuffers(1, &vboTexCoord);
+        glBindBuffer(GL_ARRAY_BUFFER, vboTexCoord);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(gTextureCoords), gTextureCoords, GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+    }
 }
 
 void ImmersiveMode::initializeFramebuffers() {
@@ -119,18 +206,27 @@ void ImmersiveMode::initializeFramebuffers() {
 }
 
 void ImmersiveMode::renderToFramebuffer(uintptr_t texture, GLfloat* gBackgroundVertices) {
+    if (blurFramebuffers.size() < 4) return;
     int blendFramebufferReadIndex = (blendFramebufferWriteIndex + 1) % 2;
 
     glViewport(0, 0, downscaledWidth, downscaledHeight);
 
-    glVertexAttribPointer(blurPositionHandle, 2, GL_FLOAT, GL_FALSE, 0, gBackgroundVertices);
-    glEnableVertexAttribArray(blurPositionHandle);
+    if (vao != 0) {
+        glBindVertexArray(vao);
+    }
 
-    glVertexAttribPointer(blurTextureCoordinatesHandle, 2, GL_FLOAT, GL_FALSE, 0, gTextureCoords);
-    glEnableVertexAttribArray(blurTextureCoordinatesHandle);
+    // Upload vertices to vboPosition
+    glBindBuffer(GL_ARRAY_BUFFER, vboPosition);
+    glBufferData(GL_ARRAY_BUFFER, 12 * sizeof(float), gBackgroundVertices, GL_STREAM_DRAW);
+    glVertexAttribPointer(blendPositionHandle, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
+    glEnableVertexAttribArray(blendPositionHandle);
+
+    // Bind vboTexCoord
+    glBindBuffer(GL_ARRAY_BUFFER, vboTexCoord);
+    glVertexAttribPointer(blendTextureCoordinatesHandle, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
+    glEnableVertexAttribArray(blendTextureCoordinatesHandle);
 
     glBindFramebuffer(GL_FRAMEBUFFER, blurFramebuffers[blendFramebufferWriteIndex]->framebuffer);
-
     glClear(GL_COLOR_BUFFER_BIT);
 
     glUseProgram(blendShaderProgram);
@@ -148,11 +244,24 @@ void ImmersiveMode::renderToFramebuffer(uintptr_t texture, GLfloat* gBackgroundV
 
     glUseProgram(blurShaderProgram);
 
+    if (blurPositionHandle != blendPositionHandle) {
+        glDisableVertexAttribArray(blendPositionHandle);
+        glBindBuffer(GL_ARRAY_BUFFER, vboPosition);
+        glVertexAttribPointer(blurPositionHandle, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
+        glEnableVertexAttribArray(blurPositionHandle);
+    }
+    if (blurTextureCoordinatesHandle != blendTextureCoordinatesHandle) {
+        glDisableVertexAttribArray(blendTextureCoordinatesHandle);
+        glBindBuffer(GL_ARRAY_BUFFER, vboTexCoord);
+        glVertexAttribPointer(blurTextureCoordinatesHandle, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
+        glEnableVertexAttribArray(blurTextureCoordinatesHandle);
+    }
+
     glBindFramebuffer(GL_FRAMEBUFFER, blurFramebuffers[2]->framebuffer);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, blurFramebuffers[blendFramebufferWriteIndex]->texture);
     glUniform1i(blurTextureHandle, 0);
-    glUniform2f(blurDirectionHandle, 1.0 / downscaledWidth, 0.0);
+    glUniform2f(blurDirectionHandle, 1.0f / downscaledWidth, 0.0f);
 
     glDrawArrays(GL_TRIANGLES, 0, 6);
 
@@ -160,9 +269,28 @@ void ImmersiveMode::renderToFramebuffer(uintptr_t texture, GLfloat* gBackgroundV
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, blurFramebuffers[2]->texture);
     glUniform1i(blurTextureHandle, 0);
-    glUniform2f(blurDirectionHandle, 0.0, 1.0 / downscaledHeight);
+    glUniform2f(blurDirectionHandle, 0.0f, 1.0f / downscaledHeight);
 
     glDrawArrays(GL_TRIANGLES, 0, 6);
+
+    glDisableVertexAttribArray(blurPositionHandle);
+    glDisableVertexAttribArray(blurTextureCoordinatesHandle);
+    if (blendPositionHandle != blurPositionHandle) {
+        glDisableVertexAttribArray(blendPositionHandle);
+    }
+    if (blendTextureCoordinatesHandle != blurTextureCoordinatesHandle) {
+        glDisableVertexAttribArray(blendTextureCoordinatesHandle);
+    }
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    if (vao != 0) {
+        glBindVertexArray(0);
+    }
 
     blendFramebufferWriteIndex = blendFramebufferReadIndex;
 }
@@ -173,14 +301,25 @@ void ImmersiveMode::renderToFinalOutput(
     std::array<float, 12> backgroundVertices,
     std::array<float, 4> foregroundBounds
 ) {
+    if (blurFramebuffers.size() < 4) return;
+
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, screenWidth, screenHeight);
     glUseProgram(displayShaderProgram);
 
-    glVertexAttribPointer(displayPositionHandle, 2, GL_FLOAT, GL_FALSE, 0, backgroundVertices.data());
+    if (vao != 0) {
+        glBindVertexArray(vao);
+    }
+
+    // Upload background vertices to vboPosition
+    glBindBuffer(GL_ARRAY_BUFFER, vboPosition);
+    glBufferData(GL_ARRAY_BUFFER, 12 * sizeof(float), backgroundVertices.data(), GL_STREAM_DRAW);
+    glVertexAttribPointer(displayPositionHandle, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
     glEnableVertexAttribArray(displayPositionHandle);
 
-    glVertexAttribPointer(displayTextureCoordinatesHandle, 2, GL_FLOAT, GL_FALSE, 0, gTextureCoords);
+    // Bind vboTexCoord
+    glBindBuffer(GL_ARRAY_BUFFER, vboTexCoord);
+    glVertexAttribPointer(displayTextureCoordinatesHandle, 2, GL_FLOAT, GL_FALSE, 0, (void*)0);
     glEnableVertexAttribArray(displayTextureCoordinatesHandle);
 
     glUniform4f(
@@ -190,8 +329,6 @@ void ImmersiveMode::renderToFinalOutput(
         foregroundBounds[2],
         foregroundBounds[3]
     );
-
-    glUniform1i(displayTextureHandle, 0);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, blurFramebuffers[3]->texture);
@@ -203,6 +340,10 @@ void ImmersiveMode::renderToFinalOutput(
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindTexture(GL_TEXTURE_2D, 0);
     glUseProgram(0);
+
+    if (vao != 0) {
+        glBindVertexArray(0);
+    }
 }
 
 void ImmersiveMode::renderBackground(
@@ -213,6 +354,8 @@ void ImmersiveMode::renderBackground(
     GLfloat* framebufferVertices,
     uintptr_t texture
 ) {
+    if (texture == 0) return;
+
     initializeShaders();
     initializeFramebuffers();
 
@@ -272,9 +415,9 @@ std::string ImmersiveMode::generateBlurShader() {
 
     int halfMask = blurMaskSize / 2;
     result << R"(
-            for (int i = -)" << halfMask << "; i <= " << halfMask << R"(; i++) {
-                lowp vec2 offset = vec2(float(i)) * direction;
-                result += texture2D(texture, vTexCoord + offset) * kernel[i + )" << halfMask << R"(];
+            for (int i = 0; i < )" << blurMaskSize << R"(; i++) {
+                lowp vec2 offset = vec2(float(i - )" << halfMask << R"()) * direction;
+                result += texture2D(texture, vTexCoord + offset) * kernel[i];
             }
             gl_FragColor = result;
         }

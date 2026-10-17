@@ -21,7 +21,8 @@
 #include <array>
 #include <vector>
 #include <memory>
-#include <GLES2/gl2.h>
+#include <GLES3/gl3.h>
+#include <GLES3/gl3ext.h>
 
 #include "renderers/es3/es3utils.h"
 
@@ -62,6 +63,8 @@ public:
         blurSkipUpdate(config.blurSkipUpdate > 0 ? config.blurSkipUpdate : 1),
         blendFactor(config.blendFactor)
     {}
+
+    ~ImmersiveMode();
 
     void renderBackground(
         unsigned screenWidth,
@@ -188,11 +191,17 @@ private:
     float blendFactor;
 
     GLuint blendShaderProgram = 0;
+    GLint blendPositionHandle = -1;
+    GLint blendTextureCoordinatesHandle = -1;
     GLint blendTextureHandle = -1;
     GLint blendPrevTextureHandle = -1;
     GLint blendFactorHandle = -1;
     int blendFramebufferWriteIndex = 0;
     int blendFramebufferCurrent = 0;
+
+    GLuint vao = 0;
+    GLuint vboPosition = 0;
+    GLuint vboTexCoord = 0;
 };
 
 } // libretrodroid

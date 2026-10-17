@@ -29,6 +29,9 @@ public:
     void setAllowMailbox(bool allow);
     bool isUsingMailbox() const { return usingMailbox; }
 
+    void setLinearFiltering(bool linear);
+    bool isLinearFiltering() const { return useLinearFiltering; }
+
     bool renderFrame();
 
     std::pair<float, float> getRelativePosition(float touchX, float touchY);
@@ -81,7 +84,14 @@ private:
 
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> descriptorSets;
-    VkSampler sampler = VK_NULL_HANDLE;
+    VkSampler samplerLinear = VK_NULL_HANDLE;
+    VkSampler samplerNearest = VK_NULL_HANDLE;
+    bool useLinearFiltering = true;
+
+    // Descriptor set update caching (avoids redundant vkUpdateDescriptorSets every frame)
+    VkImageView lastBoundImageView[3] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkSampler lastBoundSampler[3] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkImageLayout lastBoundImageLayout[3] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
 
     VkCommandPool commandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> commandBuffers;

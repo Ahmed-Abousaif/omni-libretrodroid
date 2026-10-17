@@ -89,6 +89,13 @@ void VulkanRenderer::setAllowMailbox(bool allow) {
     }
 }
 
+void VulkanRenderer::setLinearFiltering(bool linear) {
+    if (useLinearFiltering != linear) {
+        useLinearFiltering = linear;
+        LOGI("VulkanRenderer filtering updated to %s", linear ? "LINEAR" : "NEAREST");
+    }
+}
+
 void VulkanRenderer::destroyRenderFinishedSemaphores() {
     VkDevice device = VulkanContext::getInstance().getDevice();
     if (device == VK_NULL_HANDLE) {
@@ -142,9 +149,20 @@ void VulkanRenderer::deinitialize() {
             commandPool = VK_NULL_HANDLE;
         }
 
-        if (sampler != VK_NULL_HANDLE) {
-            vkDestroySampler(device, sampler, nullptr);
-            sampler = VK_NULL_HANDLE;
+        if (samplerLinear != VK_NULL_HANDLE) {
+            vkDestroySampler(device, samplerLinear, nullptr);
+            samplerLinear = VK_NULL_HANDLE;
+        }
+
+        if (samplerNearest != VK_NULL_HANDLE) {
+            vkDestroySampler(device, samplerNearest, nullptr);
+            samplerNearest = VK_NULL_HANDLE;
+        }
+
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+            lastBoundImageView[i] = VK_NULL_HANDLE;
+            lastBoundSampler[i] = VK_NULL_HANDLE;
+            lastBoundImageLayout[i] = VK_IMAGE_LAYOUT_UNDEFINED;
         }
 
         if (descriptorPool != VK_NULL_HANDLE) {
@@ -470,6 +488,12 @@ void VulkanRenderer::destroySwapchain() {
             vkDestroySwapchainKHR(device, swapchain, nullptr);
             swapchain = VK_NULL_HANDLE;
         }
+
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+            lastBoundImageView[i] = VK_NULL_HANDLE;
+            lastBoundSampler[i] = VK_NULL_HANDLE;
+            lastBoundImageLayout[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+        }
     }
 }
 
@@ -666,18 +690,33 @@ bool VulkanRenderer::createPipeline() {
 bool VulkanRenderer::createDescriptorObjects() {
     VkDevice device = VulkanContext::getInstance().getDevice();
 
-    VkSamplerCreateInfo samplerInfo {};
-    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    samplerInfo.magFilter = VK_FILTER_LINEAR;
-    samplerInfo.minFilter = VK_FILTER_LINEAR;
-    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    VkSamplerCreateInfo samplerLinearInfo {};
+    samplerLinearInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerLinearInfo.magFilter = VK_FILTER_LINEAR;
+    samplerLinearInfo.minFilter = VK_FILTER_LINEAR;
+    samplerLinearInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerLinearInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerLinearInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerLinearInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 
-    VkResult res = vkCreateSampler(device, &samplerInfo, nullptr, &sampler);
+    VkResult res = vkCreateSampler(device, &samplerLinearInfo, nullptr, &samplerLinear);
     if (res != VK_SUCCESS) {
-        LOGE("vkCreateSampler failed: %d", res);
+        LOGE("vkCreateSampler (linear) failed: %d", res);
+        return false;
+    }
+
+    VkSamplerCreateInfo samplerNearestInfo {};
+    samplerNearestInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerNearestInfo.magFilter = VK_FILTER_NEAREST;
+    samplerNearestInfo.minFilter = VK_FILTER_NEAREST;
+    samplerNearestInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    samplerNearestInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerNearestInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samplerNearestInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+
+    res = vkCreateSampler(device, &samplerNearestInfo, nullptr, &samplerNearest);
+    if (res != VK_SUCCESS) {
+        LOGE("vkCreateSampler (nearest) failed: %d", res);
         return false;
     }
 
@@ -839,22 +878,34 @@ bool VulkanRenderer::renderFrame() {
 
     const struct retro_vulkan_image* currentImage = VulkanContext::getInstance().getCurrentImage();
     if (currentImage != nullptr && currentImage->image_view != VK_NULL_HANDLE) {
-        VkDescriptorImageInfo imageInfo {};
-        imageInfo.sampler = sampler;
-        imageInfo.imageView = currentImage->image_view;
-        imageInfo.imageLayout = currentImage->image_layout != VK_IMAGE_LAYOUT_UNDEFINED
-                                ? currentImage->image_layout
-                                : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkSampler activeSampler = useLinearFiltering ? samplerLinear : samplerNearest;
+        VkImageLayout targetLayout = currentImage->image_layout != VK_IMAGE_LAYOUT_UNDEFINED
+                                     ? currentImage->image_layout
+                                     : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        VkWriteDescriptorSet write {};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = descriptorSets[currentFrame];
-        write.dstBinding = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo = &imageInfo;
+        if (lastBoundImageView[currentFrame] != currentImage->image_view ||
+            lastBoundSampler[currentFrame] != activeSampler ||
+            lastBoundImageLayout[currentFrame] != targetLayout) {
 
-        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+            VkDescriptorImageInfo imageInfo {};
+            imageInfo.sampler = activeSampler;
+            imageInfo.imageView = currentImage->image_view;
+            imageInfo.imageLayout = targetLayout;
+
+            VkWriteDescriptorSet write {};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = descriptorSets[currentFrame];
+            write.dstBinding = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &imageInfo;
+
+            vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+
+            lastBoundImageView[currentFrame] = currentImage->image_view;
+            lastBoundSampler[currentFrame] = activeSampler;
+            lastBoundImageLayout[currentFrame] = targetLayout;
+        }
     }
 
     // Calculate display dimensions in user logical space

@@ -240,6 +240,8 @@ void LibretroDroid::onSurfaceCreated() {
         }
         vulkanRenderer = std::make_unique<VulkanRenderer>();
         vulkanRenderer->initialize();
+        auto shaders = ShaderManager::getShader(fragmentShaderConfig);
+        vulkanRenderer->setLinearFiltering(shaders.linearTexture);
         vulkanRenderer->updateAspectRatio(getAspectRatio());
         vulkanRenderer->updateViewport(viewportRect);
         vulkanRenderer->updateViewportAlignment(viewportAlignment);
@@ -700,6 +702,10 @@ void LibretroDroid::setShaderConfig(ShaderManager::Config shaderConfig) {
     fragmentShaderConfig = std::move(shaderConfig);
     if (video) {
         video->updateShaderType(fragmentShaderConfig);
+    }
+    if (vulkanRenderer) {
+        auto shaders = ShaderManager::getShader(fragmentShaderConfig);
+        vulkanRenderer->setLinearFiltering(shaders.linearTexture);
     }
 }
 

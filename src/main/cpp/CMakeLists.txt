@@ -89,6 +89,8 @@ add_library(libretrodroid SHARED
         utils/libretrodroidexception.cpp
         utils/rect.h
         utils/rect.cpp
+        utils/adpf.h
+        utils/adpf.cpp
         errorcodes.h
         errorcodes.cpp
         vfs/vfs.h

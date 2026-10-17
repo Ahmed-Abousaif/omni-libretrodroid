@@ -53,6 +53,13 @@ public:
     VkSurfaceKHR getSurface() const { return surface; }
     void destroySurface();
 
+    VkQueue getPresentationQueue() const { return presentationQueue != VK_NULL_HANDLE ? presentationQueue : queue; }
+    uint32_t getPresentationQueueFamilyIndex() const { return presentationQueueFamilyIndex; }
+
+    void setTargetFrameRate(float fps);
+    void applyTargetFrameRate();
+    float getTargetFrameRate() const { return targetFps; }
+
     // Libretro interface callback helpers
     void setImage(const struct retro_vulkan_image* img, uint32_t numSemaphores, const VkSemaphore* semaphores, uint32_t srcQueueFamily);
     void setCommandBuffers(uint32_t numCmd, const VkCommandBuffer* cmd);
@@ -120,6 +127,9 @@ private:
     VkDevice device = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;
     uint32_t queueFamilyIndex = 0;
+    VkQueue presentationQueue = VK_NULL_HANDLE;
+    uint32_t presentationQueueFamilyIndex = 0;
+    float targetFps = 0.0f;
 
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     ANativeWindow* nativeWindow = nullptr;

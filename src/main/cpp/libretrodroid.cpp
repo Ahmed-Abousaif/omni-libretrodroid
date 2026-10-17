@@ -47,6 +47,7 @@
 #include "utils/rect.h"
 #include "errorcodes.h"
 #include "vfs/vfs.h"
+#include "utils/adpf.h"
 
 namespace libretrodroid {
 
@@ -210,6 +211,7 @@ void LibretroDroid::setSurface(ANativeWindow* window) {
 
 void LibretroDroid::onSurfaceDestroyed() {
     LOGI("LibretroDroid::onSurfaceDestroyed");
+    ADPFManager::getInstance().closeSession();
     if (vulkanRenderer) {
         vulkanRenderer->deinitialize();
         vulkanRenderer = nullptr;
@@ -560,6 +562,7 @@ void LibretroDroid::step() {
     }
 
     std::lock_guard<std::mutex> lock(coreLock);
+    const auto stepStart = std::chrono::steady_clock::now();
 
     LOGD("Stepping into retro_run()");
 
@@ -618,6 +621,12 @@ void LibretroDroid::step() {
 
         const double targetIntervalMs = screenRefreshRate > 0.0f ? (1000.0 / screenRefreshRate) : 16.67;
         LRDStats::noteFrame(runMs, renderMs, gpuTimeMs, presentIntervalMs, targetIntervalMs);
+    }
+
+    const auto frameWorkEnd = std::chrono::steady_clock::now();
+    const int64_t workNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(frameWorkEnd - stepStart).count();
+    if (workNanos > 0) {
+        ADPFManager::getInstance().reportActualDuration(workNanos);
     }
 
     if (fpsSync) {
@@ -799,6 +808,12 @@ void LibretroDroid::afterGameLoad() {
     updateAudioSampleRateMultiplier();
 
     defaultAspectRatio = findDefaultAspectRatio(system_av_info);
+
+    VulkanContext::getInstance().setTargetFrameRate(static_cast<float>(system_av_info.timing.fps));
+    if (system_av_info.timing.fps > 0.0) {
+        int64_t targetDurationNanos = static_cast<int64_t>(1e9 / system_av_info.timing.fps);
+        ADPFManager::getInstance().startSession(gettid(), targetDurationNanos);
+    }
 }
 
 float LibretroDroid::findDefaultAspectRatio(const retro_system_av_info& system_av_info) {

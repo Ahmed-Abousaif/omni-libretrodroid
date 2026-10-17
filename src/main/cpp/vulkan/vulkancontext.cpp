@@ -1,6 +1,7 @@
 #include "vulkancontext.h"
 #include <cstring>
 #include <algorithm>
+#include <dlfcn.h>
 
 namespace libretrodroid {
 
@@ -423,7 +424,39 @@ void VulkanContext::setNativeWindow(ANativeWindow* window) {
                     LOGW("Current queue family %u does NOT support presentation to new surface!", queueFamilyIndex);
                 }
             }
+
+            applyTargetFrameRate();
         }
+    }
+}
+
+void VulkanContext::setTargetFrameRate(float fps) {
+    targetFps = fps;
+    applyTargetFrameRate();
+}
+
+void VulkanContext::applyTargetFrameRate() {
+    if (nativeWindow == nullptr || targetFps <= 0.0f) {
+        return;
+    }
+    typedef int32_t (*PFN_ANativeWindow_setFrameRateWithStrategy)(ANativeWindow*, float, int8_t, int8_t);
+    typedef int32_t (*PFN_ANativeWindow_setFrameRate)(ANativeWindow*, float, int8_t);
+
+    static auto pfnSetFrameRateWithStrategy = reinterpret_cast<PFN_ANativeWindow_setFrameRateWithStrategy>(
+        dlsym(RTLD_DEFAULT, "ANativeWindow_setFrameRateWithChangeFrameRateStrategy")
+    );
+    static auto pfnSetFrameRate = reinterpret_cast<PFN_ANativeWindow_setFrameRate>(
+        dlsym(RTLD_DEFAULT, "ANativeWindow_setFrameRate")
+    );
+
+    if (pfnSetFrameRateWithStrategy != nullptr) {
+        // 0 = ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT
+        // 0 = ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS
+        int32_t res = pfnSetFrameRateWithStrategy(nativeWindow, targetFps, 0, 0);
+        LOGI("ANativeWindow_setFrameRateWithChangeFrameRateStrategy(%.2f) returned %d", targetFps, res);
+    } else if (pfnSetFrameRate != nullptr) {
+        int32_t res = pfnSetFrameRate(nativeWindow, targetFps, 0);
+        LOGI("ANativeWindow_setFrameRate(%.2f) returned %d", targetFps, res);
     }
 }
 
@@ -458,9 +491,15 @@ bool VulkanContext::createDevice() {
             }
             queue = coreContext.queue;
             queueFamilyIndex = coreContext.queue_family_index;
+            presentationQueue = (coreContext.presentation_queue != VK_NULL_HANDLE)
+                ? coreContext.presentation_queue
+                : coreContext.queue;
+            presentationQueueFamilyIndex = (coreContext.presentation_queue != VK_NULL_HANDLE)
+                ? coreContext.presentation_queue_family_index
+                : coreContext.queue_family_index;
             coreCreatedDevice = true;
-            LOGI("Device created by core via create_device2 (dev=%p, queue=%p, queue_idx=%u)",
-                 device, queue, queueFamilyIndex);
+            LOGI("Device created by core via create_device2 (dev=%p, queue=%p, queue_idx=%u, present_queue=%p)",
+                 device, queue, queueFamilyIndex, presentationQueue);
         } else {
             LOGW("Core create_device2 returned false, falling back to frontend device creation");
         }
@@ -489,9 +528,15 @@ bool VulkanContext::createDevice() {
             }
             queue = coreContext.queue;
             queueFamilyIndex = coreContext.queue_family_index;
+            presentationQueue = (coreContext.presentation_queue != VK_NULL_HANDLE)
+                ? coreContext.presentation_queue
+                : coreContext.queue;
+            presentationQueueFamilyIndex = (coreContext.presentation_queue != VK_NULL_HANDLE)
+                ? coreContext.presentation_queue_family_index
+                : coreContext.queue_family_index;
             coreCreatedDevice = true;
-            LOGI("Device created by core via create_device (dev=%p, queue=%p, queue_idx=%u)",
-                 device, queue, queueFamilyIndex);
+            LOGI("Device created by core via create_device (dev=%p, queue=%p, queue_idx=%u, present_queue=%p)",
+                 device, queue, queueFamilyIndex, presentationQueue);
         } else {
             LOGW("Core create_device returned false, falling back to frontend device creation");
         }
@@ -521,6 +566,8 @@ bool VulkanContext::createDevice() {
         }
 
         vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
+        presentationQueue = queue;
+        presentationQueueFamilyIndex = queueFamilyIndex;
         coreCreatedDevice = false;
         LOGI("Frontend VkDevice created: %p, queue: %p", device, queue);
     }

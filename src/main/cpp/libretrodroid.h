@@ -142,6 +142,8 @@ public:
     void setCacheDirectory(const std::string& cacheDir);
     const std::string& getCacheDirectory() const { return cacheDirectory; }
 
+    void onTrimMemory(int level);
+
     void setViewportAlignment(unsigned int viewportAlignment);
 
     void resetGlobalVariables();

@@ -236,6 +236,34 @@ void VulkanRenderer::savePipelineCache() {
     }
 }
 
+void VulkanRenderer::onTrimMemory(int level) {
+    LOGI("VulkanRenderer::onTrimMemory(level=%d)", level);
+
+    // Save pipeline cache on memory pressure or when UI is hidden
+    savePipelineCache();
+
+    // Android ComponentCallbacks2 levels:
+    // TRIM_MEMORY_RUNNING_LOW (10), TRIM_MEMORY_RUNNING_CRITICAL (15),
+    // TRIM_MEMORY_UI_HIDDEN (20), TRIM_MEMORY_BACKGROUND (40),
+    // TRIM_MEMORY_MODERATE (60), TRIM_MEMORY_COMPLETE (80)
+    if (level >= 10) {
+        // Reset cached descriptor bindings so stale image views / samplers are released
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+            lastBoundImageView[i] = VK_NULL_HANDLE;
+            lastBoundSampler[i] = VK_NULL_HANDLE;
+            lastBoundImageLayout[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+        }
+        LOGI("VulkanRenderer descriptor binding cache cleared on trim memory level %d", level);
+    }
+
+    if (level >= 80 /* TRIM_MEMORY_COMPLETE */) {
+        waitQueueIdleLocked();
+    }
+
+    // Log active memory budget & heap usage
+    VulkanContext::getInstance().logMemoryBudget();
+}
+
 void VulkanRenderer::destroyPipelineCache() {
     VkDevice device = VulkanContext::getInstance().getDevice();
     if (device != VK_NULL_HANDLE && pipelineCache != VK_NULL_HANDLE) {
@@ -561,6 +589,10 @@ bool VulkanRenderer::createSwapchain() {
     res = vkCreateSwapchainKHR(device, &sci, nullptr, &swapchain);
     if (res != VK_SUCCESS) {
         LOGE("vkCreateSwapchainKHR failed: %d", res);
+        if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY || res == VK_ERROR_OUT_OF_HOST_MEMORY) {
+            LOGE("CRITICAL: Out of memory creating swapchain");
+            VulkanContext::getInstance().logMemoryBudget();
+        }
         return false;
     }
 
@@ -831,6 +863,10 @@ bool VulkanRenderer::createPipeline() {
 
     if (res != VK_SUCCESS) {
         LOGE("vkCreateGraphicsPipelines failed: %d", res);
+        if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY || res == VK_ERROR_OUT_OF_HOST_MEMORY) {
+            LOGE("CRITICAL: Out of memory creating graphics pipeline");
+            VulkanContext::getInstance().logMemoryBudget();
+        }
         return false;
     }
     pipelineCacheDirty = true;
@@ -886,6 +922,10 @@ bool VulkanRenderer::createDescriptorObjects() {
     res = vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool);
     if (res != VK_SUCCESS) {
         LOGE("vkCreateDescriptorPool failed: %d", res);
+        if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY || res == VK_ERROR_OUT_OF_HOST_MEMORY) {
+            LOGE("CRITICAL: Out of memory creating descriptor pool");
+            VulkanContext::getInstance().logMemoryBudget();
+        }
         return false;
     }
 
@@ -900,6 +940,10 @@ bool VulkanRenderer::createDescriptorObjects() {
     res = vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.data());
     if (res != VK_SUCCESS) {
         LOGE("vkAllocateDescriptorSets failed: %d", res);
+        if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY || res == VK_ERROR_OUT_OF_HOST_MEMORY) {
+            LOGE("CRITICAL: Out of memory allocating descriptor sets");
+            VulkanContext::getInstance().logMemoryBudget();
+        }
         return false;
     }
 
@@ -1017,6 +1061,11 @@ bool VulkanRenderer::renderFrame() {
     }
     if (res == VK_ERROR_DEVICE_LOST) {
         LOGE("CRITICAL: Vulkan Device Lost (VK_ERROR_DEVICE_LOST) in vkAcquireNextImageKHR");
+        return false;
+    }
+    if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY || res == VK_ERROR_OUT_OF_HOST_MEMORY) {
+        LOGE("CRITICAL: Vulkan Out of Memory (%d) in vkAcquireNextImageKHR", res);
+        VulkanContext::getInstance().logMemoryBudget();
         return false;
     }
     if (res != VK_SUCCESS && !suboptimal) {
@@ -1261,6 +1310,9 @@ bool VulkanRenderer::renderFrame() {
             LOGE("vkQueueSubmit failed: %d", res);
             if (res == VK_ERROR_DEVICE_LOST) {
                 LOGE("CRITICAL: Vulkan Device Lost (VK_ERROR_DEVICE_LOST) in vkQueueSubmit");
+            } else if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY || res == VK_ERROR_OUT_OF_HOST_MEMORY) {
+                LOGE("CRITICAL: Vulkan Out of Memory (%d) in vkQueueSubmit", res);
+                VulkanContext::getInstance().logMemoryBudget();
             } else {
                 needsRecreate = true;
                 vkQueueWaitIdle(queue);
@@ -1304,6 +1356,9 @@ bool VulkanRenderer::renderFrame() {
         needsRecreate = true;
     } else if (res == VK_ERROR_DEVICE_LOST) {
         LOGE("CRITICAL: Vulkan Device Lost (VK_ERROR_DEVICE_LOST) in vkQueuePresentKHR");
+    } else if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY || res == VK_ERROR_OUT_OF_HOST_MEMORY) {
+        LOGE("CRITICAL: Vulkan Out of Memory (%d) in vkQueuePresentKHR", res);
+        VulkanContext::getInstance().logMemoryBudget();
     }
 
     currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;

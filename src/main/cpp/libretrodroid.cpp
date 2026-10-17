@@ -723,6 +723,13 @@ void LibretroDroid::setCacheDirectory(const std::string& cacheDir) {
     }
 }
 
+void LibretroDroid::onTrimMemory(int level) {
+    LOGI("LibretroDroid::onTrimMemory level=%d", level);
+    if (vulkanRenderer) {
+        vulkanRenderer->onTrimMemory(level);
+    }
+}
+
 void LibretroDroid::handleVideoRefresh(
     const void *data,
     unsigned int width,

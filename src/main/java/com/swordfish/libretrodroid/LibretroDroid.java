@@ -154,5 +154,7 @@ public class LibretroDroid {
     public static native void setProfilingEnabled(boolean enabled);
     public static native boolean isProfilingEnabled();
     public static native double[] getProfilingStats();
+
+    public static native void onTrimMemory(int level);
 }
 

@@ -706,6 +706,14 @@ JNIEXPORT jdoubleArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_ge
     return result;
 }
 
+JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_onTrimMemory(
+    JNIEnv* env,
+    jclass obj,
+    jint level
+) {
+    LibretroDroid::getInstance().onTrimMemory(level);
+}
+
 }
 
 }

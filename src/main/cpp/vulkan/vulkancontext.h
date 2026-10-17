@@ -96,6 +96,12 @@ public:
     bool isContextResetCalled() const { return contextResetCalled; }
     void setContextResetCalled(bool called) { contextResetCalled = called; }
 
+    // Memory and Budget tracking (Phase 6)
+    void logMemoryProperties();
+    void logMemoryBudget();
+    bool isMemoryBudgetSupported() const { return memoryBudgetSupported; }
+    bool isUnifiedMemory() const { return isUma; }
+
     static constexpr uint32_t MAX_SYNC_INDEX = 3;
 
 private:
@@ -130,6 +136,8 @@ private:
     VkQueue presentationQueue = VK_NULL_HANDLE;
     uint32_t presentationQueueFamilyIndex = 0;
     float targetFps = 0.0f;
+    bool memoryBudgetSupported = false;
+    bool isUma = false;
 
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     ANativeWindow* nativeWindow = nullptr;

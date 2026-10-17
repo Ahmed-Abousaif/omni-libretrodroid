@@ -3,6 +3,42 @@
 #include <algorithm>
 #include <dlfcn.h>
 
+#ifndef VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME
+#define VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME "VK_KHR_get_physical_device_properties2"
+#endif
+
+#ifndef VK_EXT_MEMORY_BUDGET_EXTENSION_NAME
+#define VK_EXT_MEMORY_BUDGET_EXTENSION_NAME "VK_EXT_memory_budget"
+#endif
+
+#ifndef VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT static_cast<VkStructureType>(1000237000)
+#endif
+
+#ifndef VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2
+#define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2 static_cast<VkStructureType>(1000059006)
+#endif
+
+#ifndef VK_EXT_memory_budget
+typedef struct VkPhysicalDeviceMemoryBudgetPropertiesEXT {
+    VkStructureType sType;
+    void* pNext;
+    VkDeviceSize heapBudget[VK_MAX_MEMORY_HEAPS];
+    VkDeviceSize heapUsage[VK_MAX_MEMORY_HEAPS];
+} VkPhysicalDeviceMemoryBudgetPropertiesEXT;
+#endif
+
+#ifndef VK_VERSION_1_1
+#ifndef VK_KHR_get_physical_device_properties2
+typedef struct VkPhysicalDeviceMemoryProperties2 {
+    VkStructureType sType;
+    void* pNext;
+    VkPhysicalDeviceMemoryProperties memoryProperties;
+} VkPhysicalDeviceMemoryProperties2;
+typedef void (VKAPI_PTR *PFN_vkGetPhysicalDeviceMemoryProperties2)(VkPhysicalDevice physicalDevice, VkPhysicalDeviceMemoryProperties2* pMemoryProperties);
+#endif
+#endif
+
 namespace libretrodroid {
 
 VulkanContext::VulkanContext() = default;
@@ -67,6 +103,8 @@ void VulkanContext::deinitialize() {
     for (uint32_t i = 0; i < MAX_SYNC_INDEX; ++i) {
         fenceWaited[i] = false;
     }
+    memoryBudgetSupported = false;
+    isUma = false;
 }
 
 void VulkanContext::setNegotiationInterface(const struct retro_hw_render_context_negotiation_interface_vulkan& iface) {
@@ -232,6 +270,19 @@ bool VulkanContext::createInstance() {
             VK_KHR_ANDROID_SURFACE_EXTENSION_NAME
         };
 
+        uint32_t instExtCount = 0;
+        vkEnumerateInstanceExtensionProperties(nullptr, &instExtCount, nullptr);
+        if (instExtCount > 0) {
+            std::vector<VkExtensionProperties> availableInstExts(instExtCount);
+            vkEnumerateInstanceExtensionProperties(nullptr, &instExtCount, availableInstExts.data());
+            for (const auto& ext : availableInstExts) {
+                if (strcmp(ext.extensionName, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME) == 0) {
+                    extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+                    break;
+                }
+            }
+        }
+
         VkInstanceCreateInfo createInfo {};
         createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         createInfo.pApplicationInfo = appInfo;
@@ -279,6 +330,19 @@ VkInstance VulkanContext::createInstanceWrapper(void* opaque, const VkInstanceCr
 
     addExt(VK_KHR_SURFACE_EXTENSION_NAME);
     addExt(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME);
+
+    uint32_t instExtCount = 0;
+    vkEnumerateInstanceExtensionProperties(nullptr, &instExtCount, nullptr);
+    if (instExtCount > 0) {
+        std::vector<VkExtensionProperties> availableInstExts(instExtCount);
+        vkEnumerateInstanceExtensionProperties(nullptr, &instExtCount, availableInstExts.data());
+        for (const auto& ext : availableInstExts) {
+            if (strcmp(ext.extensionName, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME) == 0) {
+                addExt(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+                break;
+            }
+        }
+    }
 
     VkInstanceCreateInfo modified = *create_info;
     modified.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
@@ -350,6 +414,7 @@ bool VulkanContext::selectPhysicalDevice() {
                 queueFamilyIndex = q;
                 LOGI("Selected Vulkan GPU: %s (type %d), queue family %u (graphics+compute+present)",
                      props.deviceName, (int)props.deviceType, q);
+                logMemoryProperties();
                 return true;
             }
         }
@@ -377,6 +442,7 @@ bool VulkanContext::selectPhysicalDevice() {
                     gpu = candidate;
                     queueFamilyIndex = q;
                     LOGI("Selected fallback Vulkan GPU: %s, queue family %u", props.deviceName, q);
+                    logMemoryProperties();
                     return true;
                 }
             }
@@ -551,13 +617,16 @@ bool VulkanContext::createDevice() {
         qci.queueCount = 1;
         qci.pQueuePriorities = &priority;
 
-        const char* devExts[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+        std::vector<const char*> devExts = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+        if (memoryBudgetSupported) {
+            devExts.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+        }
         VkDeviceCreateInfo dci {};
         dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         dci.queueCreateInfoCount = 1;
         dci.pQueueCreateInfos = &qci;
-        dci.enabledExtensionCount = 1;
-        dci.ppEnabledExtensionNames = devExts;
+        dci.enabledExtensionCount = static_cast<uint32_t>(devExts.size());
+        dci.ppEnabledExtensionNames = devExts.data();
 
         VkResult res = vkCreateDevice(gpu, &dci, nullptr, &device);
         if (res != VK_SUCCESS) {
@@ -585,7 +654,9 @@ bool VulkanContext::createDevice() {
 }
 
 VkDevice VulkanContext::createDeviceWrapper(VkPhysicalDevice physicalDevice, void* opaque, const VkDeviceCreateInfo* create_info) {
-    (void)opaque;
+    auto* ctx = reinterpret_cast<VulkanContext*>(opaque);
+    const bool budgetSupported = (ctx != nullptr) ? ctx->memoryBudgetSupported : VulkanContext::getInstance().memoryBudgetSupported;
+
     std::vector<const char*> extensions;
     for (uint32_t i = 0; i < create_info->enabledExtensionCount; ++i) {
         extensions.push_back(create_info->ppEnabledExtensionNames[i]);
@@ -599,6 +670,9 @@ VkDevice VulkanContext::createDeviceWrapper(VkPhysicalDevice physicalDevice, voi
     };
 
     addExt(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    if (budgetSupported) {
+        addExt(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    }
 
     VkDeviceCreateInfo modified = *create_info;
     modified.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
@@ -611,6 +685,132 @@ VkDevice VulkanContext::createDeviceWrapper(VkPhysicalDevice physicalDevice, voi
         return VK_NULL_HANDLE;
     }
     return dev;
+}
+
+void VulkanContext::logMemoryProperties() {
+    if (gpu == VK_NULL_HANDLE) {
+        return;
+    }
+
+    VkPhysicalDeviceMemoryProperties memProperties {};
+    vkGetPhysicalDeviceMemoryProperties(gpu, &memProperties);
+
+    // Determine Unified Memory Architecture (UMA)
+    // On mobile SoCs, device-local heaps are host-visible (or there is only a single shared heap).
+    bool hasHostVisibleDeviceLocal = false;
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; ++i) {
+        const VkMemoryPropertyFlags flags = memProperties.memoryTypes[i].propertyFlags;
+        if ((flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
+            (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+            hasHostVisibleDeviceLocal = true;
+            break;
+        }
+    }
+    isUma = hasHostVisibleDeviceLocal || (memProperties.memoryHeapCount == 1 &&
+            (memProperties.memoryHeaps[0].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT));
+
+    LOGI("Vulkan Memory Architecture: %s (heaps: %u, types: %u)",
+         isUma ? "Unified Memory (UMA / Mobile SoC)" : "Discrete Memory",
+         memProperties.memoryHeapCount,
+         memProperties.memoryTypeCount);
+
+    VkPhysicalDeviceProperties devProps {};
+    vkGetPhysicalDeviceProperties(gpu, &devProps);
+    LOGI("Vulkan Memory Limits: maxAllocations=%u, nonCoherentAtomSize=%llu B, minMapAlignment=%llu B",
+         devProps.limits.maxMemoryAllocationCount,
+         static_cast<unsigned long long>(devProps.limits.nonCoherentAtomSize),
+         static_cast<unsigned long long>(devProps.limits.minMemoryMapAlignment));
+
+    for (uint32_t i = 0; i < memProperties.memoryHeapCount; ++i) {
+        uint64_t sizeMB = memProperties.memoryHeaps[i].size / (1024 * 1024);
+        LOGI("  Heap %u: %llu MB (flags: 0x%08x%s%s)",
+             i,
+             static_cast<unsigned long long>(sizeMB),
+             memProperties.memoryHeaps[i].flags,
+             (memProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? " [DEVICE_LOCAL]" : "",
+             (memProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_MULTI_INSTANCE_BIT) ? " [MULTI_INSTANCE]" : "");
+    }
+
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; ++i) {
+        const auto& type = memProperties.memoryTypes[i];
+        std::string flagsStr;
+        if (type.propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) flagsStr += "DEVICE_LOCAL ";
+        if (type.propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) flagsStr += "HOST_VISIBLE ";
+        if (type.propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) flagsStr += "HOST_COHERENT ";
+        if (type.propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) flagsStr += "HOST_CACHED ";
+        if (type.propertyFlags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT) flagsStr += "LAZILY_ALLOCATED ";
+        if (type.propertyFlags & VK_MEMORY_PROPERTY_PROTECTED_BIT) flagsStr += "PROTECTED ";
+
+        LOGI("  Type %2u: heap %u, flags: 0x%08x (%s)",
+             i, type.heapIndex, type.propertyFlags, flagsStr.c_str());
+    }
+
+    // Check for VK_EXT_memory_budget extension support
+    uint32_t extCount = 0;
+    vkEnumerateDeviceExtensionProperties(gpu, nullptr, &extCount, nullptr);
+    if (extCount > 0) {
+        std::vector<VkExtensionProperties> devExts(extCount);
+        vkEnumerateDeviceExtensionProperties(gpu, nullptr, &extCount, devExts.data());
+        for (const auto& ext : devExts) {
+            if (strcmp(ext.extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0) {
+                memoryBudgetSupported = true;
+                break;
+            }
+        }
+    }
+    LOGI("Vulkan VK_EXT_memory_budget supported: %s", memoryBudgetSupported ? "YES" : "NO");
+
+    logMemoryBudget();
+}
+
+void VulkanContext::logMemoryBudget() {
+    if (gpu == VK_NULL_HANDLE) {
+        return;
+    }
+
+    auto pfnGetMemProps2 = reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties2>(
+        vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceMemoryProperties2")
+    );
+    if (pfnGetMemProps2 == nullptr) {
+        pfnGetMemProps2 = reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties2>(
+            vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceMemoryProperties2KHR")
+        );
+    }
+
+    if (memoryBudgetSupported && pfnGetMemProps2 != nullptr) {
+        VkPhysicalDeviceMemoryBudgetPropertiesEXT budgetProps {};
+        budgetProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+
+        VkPhysicalDeviceMemoryProperties2 props2 {};
+        props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+        props2.pNext = &budgetProps;
+
+        pfnGetMemProps2(gpu, &props2);
+
+        LOGI("Vulkan Memory Budget Status (via VK_EXT_memory_budget):");
+        for (uint32_t i = 0; i < props2.memoryProperties.memoryHeapCount; ++i) {
+            uint64_t usageMB = budgetProps.heapUsage[i] / (1024 * 1024);
+            uint64_t budgetMB = budgetProps.heapBudget[i] / (1024 * 1024);
+            uint64_t totalMB = props2.memoryProperties.memoryHeaps[i].size / (1024 * 1024);
+            LOGI("  Heap %u [%s]: Usage = %llu MB / Budget = %llu MB (Total = %llu MB)",
+                 i,
+                 (props2.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? "DEVICE_LOCAL" : "HOST",
+                 static_cast<unsigned long long>(usageMB),
+                 static_cast<unsigned long long>(budgetMB),
+                 static_cast<unsigned long long>(totalMB));
+        }
+    } else {
+        VkPhysicalDeviceMemoryProperties memProps {};
+        vkGetPhysicalDeviceMemoryProperties(gpu, &memProps);
+        LOGI("Vulkan Memory Heap Status:");
+        for (uint32_t i = 0; i < memProps.memoryHeapCount; ++i) {
+            uint64_t totalMB = memProps.memoryHeaps[i].size / (1024 * 1024);
+            LOGI("  Heap %u [%s]: Total = %llu MB",
+                 i,
+                 (memProps.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? "DEVICE_LOCAL" : "HOST",
+                 static_cast<unsigned long long>(totalMB));
+        }
+    }
 }
 
 void VulkanContext::setImage(

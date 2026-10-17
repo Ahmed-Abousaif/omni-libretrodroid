@@ -34,6 +34,7 @@ public:
 
     void setCacheDirectory(const std::string& dir);
     void savePipelineCache();
+    void onTrimMemory(int level);
 
     bool renderFrame();
 

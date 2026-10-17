@@ -58,7 +58,9 @@ public:
     // Core callback. Waits until this slot's last submission has finished.
     // Does not reset the fence; the frontend owns reset.
     void waitSyncIndex();
-    // Frontend only, before reusing the slot. Waits and resets the fence once.
+    // Frontend only, before reusing the slot.
+    void waitForSyncFence();
+    void resetSyncFence();
     void waitAndResetSyncFence();
     uint32_t getSyncIndex();
     uint32_t getSyncIndexMask() const { return (1u << MAX_SYNC_INDEX) - 1u; }
@@ -83,6 +85,8 @@ public:
 
     retro_hw_context_reset_t getContextReset() const { return contextReset; }
     retro_hw_context_reset_t getContextDestroy() const { return contextDestroy; }
+    bool isContextResetCalled() const { return contextResetCalled; }
+    void setContextResetCalled(bool called) { contextResetCalled = called; }
 
     static constexpr uint32_t MAX_SYNC_INDEX = 3;
 
@@ -125,6 +129,7 @@ private:
     struct retro_hw_render_interface_vulkan libretroInterface {};
     retro_hw_context_reset_t contextReset = nullptr;
     retro_hw_context_reset_t contextDestroy = nullptr;
+    bool contextResetCalled = false;
 
     // Synchronization & Per-frame state
     std::mutex queueMutex;

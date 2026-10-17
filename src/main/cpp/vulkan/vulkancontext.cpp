@@ -38,6 +38,10 @@ void VulkanContext::deinitialize() {
     }
 
     destroySurface();
+    if (nativeWindow != nullptr) {
+        ANativeWindow_release(nativeWindow);
+        nativeWindow = nullptr;
+    }
 
     if (instance != VK_NULL_HANDLE) {
         vkDestroyInstance(instance, nullptr);
@@ -52,6 +56,7 @@ void VulkanContext::deinitialize() {
     negotiationInterface.reset();
     contextReset = nullptr;
     contextDestroy = nullptr;
+    contextResetCalled = false;
     currentImage = nullptr;
     hasLastImage = false;
     waitSemaphores.clear();
@@ -127,6 +132,24 @@ const struct retro_hw_render_interface_vulkan* VulkanContext::getInterface() {
 }
 
 bool VulkanContext::createInstance() {
+    uint32_t supportedApiVersion = VK_API_VERSION_1_0;
+    auto pfnEnumerateInstanceVersion = reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
+        vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceVersion"));
+    if (pfnEnumerateInstanceVersion != nullptr) {
+        if (pfnEnumerateInstanceVersion(&supportedApiVersion) != VK_SUCCESS) {
+            supportedApiVersion = VK_API_VERSION_1_0;
+        }
+    }
+
+    uint32_t targetApiVersion = VK_API_VERSION_1_0;
+    if (supportedApiVersion >= VK_API_VERSION_1_3) {
+        targetApiVersion = VK_API_VERSION_1_3;
+    } else if (supportedApiVersion >= VK_API_VERSION_1_2) {
+        targetApiVersion = VK_API_VERSION_1_2;
+    } else if (supportedApiVersion >= VK_API_VERSION_1_1) {
+        targetApiVersion = VK_API_VERSION_1_1;
+    }
+
     const VkApplicationInfo* appInfo = nullptr;
     VkApplicationInfo defaultAppInfo {};
     defaultAppInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -134,7 +157,7 @@ bool VulkanContext::createInstance() {
     defaultAppInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     defaultAppInfo.pEngineName = "LibretroDroid";
     defaultAppInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-    defaultAppInfo.apiVersion = VK_API_VERSION_1_1;
+    defaultAppInfo.apiVersion = targetApiVersion;
 
     if (negotiationInterface.has_value() && negotiationInterface->get_application_info != nullptr) {
         appInfo = negotiationInterface->get_application_info();
@@ -143,10 +166,30 @@ bool VulkanContext::createInstance() {
         appInfo = &defaultAppInfo;
     }
 
-    LOGI("Creating VkInstance with target API version %u.%u.%u",
+    LOGI("Creating VkInstance with target API version %u.%u.%u (driver supports up to %u.%u.%u)",
          VK_VERSION_MAJOR(appInfo->apiVersion),
          VK_VERSION_MINOR(appInfo->apiVersion),
-         VK_VERSION_PATCH(appInfo->apiVersion));
+         VK_VERSION_PATCH(appInfo->apiVersion),
+         VK_VERSION_MAJOR(supportedApiVersion),
+         VK_VERSION_MINOR(supportedApiVersion),
+         VK_VERSION_PATCH(supportedApiVersion));
+
+    std::vector<const char*> layers;
+#ifndef NDEBUG
+    uint32_t layerCount = 0;
+    vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
+    if (layerCount > 0) {
+        std::vector<VkLayerProperties> availableLayers(layerCount);
+        vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+        for (const auto& layer : availableLayers) {
+            if (strcmp(layer.layerName, "VK_LAYER_KHRONOS_validation") == 0) {
+                layers.push_back("VK_LAYER_KHRONOS_validation");
+                LOGI("Found and enabled Khronos Vulkan validation layer");
+                break;
+            }
+        }
+    }
+#endif
 
     if (negotiationInterface.has_value() &&
         negotiationInterface->interface_version >= 2 &&
@@ -169,6 +212,8 @@ bool VulkanContext::createInstance() {
         createInfo.pApplicationInfo = appInfo;
         createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
         createInfo.ppEnabledExtensionNames = extensions.data();
+        createInfo.enabledLayerCount = static_cast<uint32_t>(layers.size());
+        createInfo.ppEnabledLayerNames = layers.empty() ? nullptr : layers.data();
 
         VkResult res = vkCreateInstance(&createInfo, nullptr, &instance);
         if (res != VK_SUCCESS) {
@@ -234,6 +279,58 @@ bool VulkanContext::selectPhysicalDevice() {
     std::vector<VkPhysicalDevice> gpus(count);
     vkEnumeratePhysicalDevices(instance, &count, gpus.data());
 
+    // Score GPUs: discrete > integrated > virtual > cpu
+    auto scoreGpu = [](VkPhysicalDevice device) -> int {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(device, &props);
+        switch (props.deviceType) {
+            case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return 1000;
+            case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return 800;
+            case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: return 400;
+            case VK_PHYSICAL_DEVICE_TYPE_CPU: return 10;
+            default: return 100;
+        }
+    };
+
+    std::stable_sort(gpus.begin(), gpus.end(), [&](VkPhysicalDevice a, VkPhysicalDevice b) {
+        return scoreGpu(a) > scoreGpu(b);
+    });
+
+    for (const auto& candidate : gpus) {
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(candidate, &props);
+
+        if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+            LOGW("Encountered software Vulkan physical device: %s", props.deviceName);
+        }
+
+        uint32_t queueCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &queueCount, nullptr);
+        std::vector<VkQueueFamilyProperties> queueProps(queueCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &queueCount, queueProps.data());
+
+        for (uint32_t q = 0; q < queueCount; ++q) {
+            const bool hasGraphics = (queueProps[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0;
+            const bool hasCompute = (queueProps[q].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
+
+            VkBool32 presentSupported = VK_FALSE;
+            if (surface != VK_NULL_HANDLE) {
+                vkGetPhysicalDeviceSurfaceSupportKHR(candidate, q, surface, &presentSupported);
+            } else {
+                presentSupported = VK_TRUE;
+            }
+
+            if (hasGraphics && hasCompute && presentSupported) {
+                gpu = candidate;
+                queueFamilyIndex = q;
+                LOGI("Selected Vulkan GPU: %s (type %d), queue family %u (graphics+compute+present)",
+                     props.deviceName, (int)props.deviceType, q);
+                return true;
+            }
+        }
+    }
+
+    // Fallback pass: any graphics queue with presentation
     for (const auto& candidate : gpus) {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(candidate, &props);
@@ -244,29 +341,19 @@ bool VulkanContext::selectPhysicalDevice() {
         vkGetPhysicalDeviceQueueFamilyProperties(candidate, &queueCount, queueProps.data());
 
         for (uint32_t q = 0; q < queueCount; ++q) {
-            if ((queueProps[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
-                (queueProps[q].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
-                gpu = candidate;
-                queueFamilyIndex = q;
-                LOGI("Selected Vulkan GPU: %s, queue family %u", props.deviceName, q);
-                return true;
-            }
-        }
-    }
-
-    // Fallback to first GPU with graphics bit
-    for (const auto& candidate : gpus) {
-        uint32_t queueCount = 0;
-        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &queueCount, nullptr);
-        std::vector<VkQueueFamilyProperties> queueProps(queueCount);
-        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &queueCount, queueProps.data());
-
-        for (uint32_t q = 0; q < queueCount; ++q) {
             if (queueProps[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-                gpu = candidate;
-                queueFamilyIndex = q;
-                LOGI("Selected fallback Vulkan GPU (graphics only), queue family %u", q);
-                return true;
+                VkBool32 presentSupported = VK_FALSE;
+                if (surface != VK_NULL_HANDLE) {
+                    vkGetPhysicalDeviceSurfaceSupportKHR(candidate, q, surface, &presentSupported);
+                } else {
+                    presentSupported = VK_TRUE;
+                }
+                if (presentSupported) {
+                    gpu = candidate;
+                    queueFamilyIndex = q;
+                    LOGI("Selected fallback Vulkan GPU: %s, queue family %u", props.deviceName, q);
+                    return true;
+                }
             }
         }
     }
@@ -276,12 +363,22 @@ bool VulkanContext::selectPhysicalDevice() {
 }
 
 void VulkanContext::setNativeWindow(ANativeWindow* window) {
-    if (nativeWindow == window && surface != VK_NULL_HANDLE) {
+    if (nativeWindow == window) {
+        if (window != nullptr) {
+            // Balance reference from ANativeWindow_fromSurface
+            ANativeWindow_release(window);
+        }
         return;
     }
 
-    nativeWindow = window;
     destroySurface();
+
+    if (nativeWindow != nullptr) {
+        ANativeWindow_release(nativeWindow);
+        nativeWindow = nullptr;
+    }
+
+    nativeWindow = window;
 
     if (instance != VK_NULL_HANDLE && nativeWindow != nullptr) {
         VkAndroidSurfaceCreateInfoKHR createInfo {};
@@ -293,6 +390,15 @@ void VulkanContext::setNativeWindow(ANativeWindow* window) {
             LOGE("vkCreateAndroidSurfaceKHR failed: %d", res);
         } else {
             LOGI("Created VkSurfaceKHR from ANativeWindow: %p", (void*)(uintptr_t)surface);
+
+            // Verify surface presentation support on current queue family
+            if (gpu != VK_NULL_HANDLE) {
+                VkBool32 supported = VK_FALSE;
+                vkGetPhysicalDeviceSurfaceSupportKHR(gpu, queueFamilyIndex, surface, &supported);
+                if (!supported) {
+                    LOGW("Current queue family %u does NOT support presentation to new surface!", queueFamilyIndex);
+                }
+            }
         }
     }
 }
@@ -468,14 +574,25 @@ void VulkanContext::waitSyncIndex() {
     vkWaitForFences(device, 1, &syncFences[index], VK_TRUE, UINT64_MAX);
 }
 
-void VulkanContext::waitAndResetSyncFence() {
+void VulkanContext::waitForSyncFence() {
     std::lock_guard<std::mutex> lock(syncMutex);
     if (syncIndex >= MAX_SYNC_INDEX || fenceWaited[syncIndex] || syncFences[syncIndex] == VK_NULL_HANDLE) {
         return;
     }
     vkWaitForFences(device, 1, &syncFences[syncIndex], VK_TRUE, UINT64_MAX);
-    vkResetFences(device, 1, &syncFences[syncIndex]);
     fenceWaited[syncIndex] = true;
+}
+
+void VulkanContext::resetSyncFence() {
+    std::lock_guard<std::mutex> lock(syncMutex);
+    if (syncIndex < MAX_SYNC_INDEX && syncFences[syncIndex] != VK_NULL_HANDLE) {
+        vkResetFences(device, 1, &syncFences[syncIndex]);
+    }
+}
+
+void VulkanContext::waitAndResetSyncFence() {
+    waitForSyncFence();
+    resetSyncFence();
 }
 
 uint32_t VulkanContext::getSyncIndex() {

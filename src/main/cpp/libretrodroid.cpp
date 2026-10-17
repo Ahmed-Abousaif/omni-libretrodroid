@@ -238,9 +238,14 @@ void LibretroDroid::onSurfaceCreated() {
         vulkanRenderer->updateViewport(viewportRect);
         vulkanRenderer->updateViewportAlignment(viewportAlignment);
 
-        if (VulkanContext::getInstance().getContextReset() != nullptr) {
-            LOGI("Calling Vulkan context_reset callback");
-            VulkanContext::getInstance().getContextReset()();
+        if (!VulkanContext::getInstance().isContextResetCalled()) {
+            if (VulkanContext::getInstance().getContextReset() != nullptr) {
+                LOGI("Calling Vulkan context_reset callback");
+                VulkanContext::getInstance().getContextReset()();
+                VulkanContext::getInstance().setContextResetCalled(true);
+            }
+        } else {
+            LOGI("Vulkan context_reset already called, skipping on surface recreation");
         }
         return;
     }
@@ -494,8 +499,9 @@ void LibretroDroid::destroy() {
 
     LOGD("Performing libretrodroid destroy");
 
-    if (vulkanRenderer) {
+    if (VulkanContext::getInstance().isVulkanRequested()) {
         if (VulkanContext::getInstance().getContextDestroy() != nullptr) {
+            LOGI("Calling Vulkan context_destroy callback");
             VulkanContext::getInstance().getContextDestroy()();
         }
     } else if (Environment::getInstance().getHwContextDestroy() != nullptr) {
@@ -510,6 +516,8 @@ void LibretroDroid::destroy() {
     if (vulkanRenderer) {
         vulkanRenderer->deinitialize();
         vulkanRenderer = nullptr;
+    }
+    if (VulkanContext::getInstance().isVulkanRequested()) {
         VulkanContext::getInstance().deinitialize();
     }
 

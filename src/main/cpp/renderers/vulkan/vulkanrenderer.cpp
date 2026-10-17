@@ -773,8 +773,8 @@ bool VulkanRenderer::renderFrame() {
         needsRecreate = false;
     }
 
-    // Wait on this slot's fence and reset it once. The core waits without resetting.
-    VulkanContext::getInstance().waitAndResetSyncFence();
+    // Wait on this slot's fence. Resetting is deferred until submission to avoid deadlock if acquire fails.
+    VulkanContext::getInstance().waitForSyncFence();
 
     // Collect GPU timestamp query results from this slot's prior execution
     if (timestampsSupported && timestampQueryPool != VK_NULL_HANDLE && queryInFlight[currentFrame]) {
@@ -808,7 +808,7 @@ bool VulkanRenderer::renderFrame() {
     );
 
     const bool suboptimal = res == VK_SUBOPTIMAL_KHR;
-    if (res == VK_ERROR_OUT_OF_DATE_KHR) {
+    if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_ERROR_SURFACE_LOST_KHR) {
         // The acquire did not signal a semaphore. Recreate before the next frame.
         needsRecreate = true;
         return false;
@@ -926,6 +926,37 @@ bool VulkanRenderer::renderFrame() {
         vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestampQueryPool, currentFrame * 2);
     }
 
+    // Libretro Vulkan spec: if image_layout is UNDEFINED, transition to SHADER_READ_ONLY_OPTIMAL
+    if (currentImage != nullptr && currentImage->image_view != VK_NULL_HANDLE) {
+        if (currentImage->image_layout == VK_IMAGE_LAYOUT_UNDEFINED && currentImage->create_info.image != VK_NULL_HANDLE) {
+            VkImageMemoryBarrier barrier {};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = currentImage->create_info.image;
+            barrier.subresourceRange = currentImage->create_info.subresourceRange;
+            if (barrier.subresourceRange.aspectMask == 0) {
+                barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                barrier.subresourceRange.levelCount = 1;
+                barrier.subresourceRange.layerCount = 1;
+            }
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+            vkCmdPipelineBarrier(
+                cmd,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0,
+                0, nullptr,
+                0, nullptr,
+                1, &barrier
+            );
+        }
+    }
+
     VkClearValue clearColor = { {{ 0.0f, 0.0f, 0.0f, 1.0f }} };
     VkRenderPassBeginInfo rpbi {};
     rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1004,6 +1035,7 @@ bool VulkanRenderer::renderFrame() {
 
     {
         std::lock_guard<std::mutex> lock(VulkanContext::getInstance().getQueueMutex());
+        VulkanContext::getInstance().resetSyncFence();
         res = vkQueueSubmit(queue, 1, &si, currentSyncFence);
         if (res != VK_SUCCESS) {
             // Present would queue a buffer whose wait semaphore never signaled.

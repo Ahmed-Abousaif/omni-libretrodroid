@@ -813,6 +813,10 @@ bool VulkanRenderer::renderFrame() {
         needsRecreate = true;
         return false;
     }
+    if (res == VK_ERROR_DEVICE_LOST) {
+        LOGE("CRITICAL: Vulkan Device Lost (VK_ERROR_DEVICE_LOST) in vkAcquireNextImageKHR");
+        return false;
+    }
     if (res != VK_SUCCESS && !suboptimal) {
         LOGE("vkAcquireNextImageKHR failed: %d", res);
         return false;
@@ -1041,15 +1045,19 @@ bool VulkanRenderer::renderFrame() {
             // Present would queue a buffer whose wait semaphore never signaled.
             // Android crashes in Surface::queueBuffer on that path.
             LOGE("vkQueueSubmit failed: %d", res);
-            needsRecreate = true;
-            vkQueueWaitIdle(queue);
-            if (imageAvailableSemaphores[currentFrame] != VK_NULL_HANDLE) {
-                vkDestroySemaphore(device, imageAvailableSemaphores[currentFrame], nullptr);
-                imageAvailableSemaphores[currentFrame] = VK_NULL_HANDLE;
+            if (res == VK_ERROR_DEVICE_LOST) {
+                LOGE("CRITICAL: Vulkan Device Lost (VK_ERROR_DEVICE_LOST) in vkQueueSubmit");
+            } else {
+                needsRecreate = true;
+                vkQueueWaitIdle(queue);
+                if (imageAvailableSemaphores[currentFrame] != VK_NULL_HANDLE) {
+                    vkDestroySemaphore(device, imageAvailableSemaphores[currentFrame], nullptr);
+                    imageAvailableSemaphores[currentFrame] = VK_NULL_HANDLE;
+                }
+                VkSemaphoreCreateInfo replacement {};
+                replacement.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+                vkCreateSemaphore(device, &replacement, nullptr, &imageAvailableSemaphores[currentFrame]);
             }
-            VkSemaphoreCreateInfo replacement {};
-            replacement.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-            vkCreateSemaphore(device, &replacement, nullptr, &imageAvailableSemaphores[currentFrame]);
         } else {
             VulkanContext::getInstance().setCurrentFenceInFlight();
 
@@ -1062,8 +1070,10 @@ bool VulkanRenderer::renderFrame() {
             pi.pImageIndices = &imageIndex;
 
             res = vkQueuePresentKHR(queue, &pi);
-            if (suboptimal || res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
+            if (suboptimal || res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_SURFACE_LOST_KHR) {
                 needsRecreate = true;
+            } else if (res == VK_ERROR_DEVICE_LOST) {
+                LOGE("CRITICAL: Vulkan Device Lost (VK_ERROR_DEVICE_LOST) in vkQueuePresentKHR");
             }
         }
     }

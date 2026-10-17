@@ -37,6 +37,7 @@ public:
 
     void setNegotiationInterface(const struct retro_hw_render_context_negotiation_interface_vulkan& iface);
     bool initHwRender(struct retro_hw_render_callback* cb);
+    bool ensureInitialized();
     const struct retro_hw_render_interface_vulkan* getInterface();
 
     // Device / Context handles

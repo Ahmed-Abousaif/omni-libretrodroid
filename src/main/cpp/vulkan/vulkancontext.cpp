@@ -84,29 +84,46 @@ bool VulkanContext::initHwRender(struct retro_hw_render_callback* cb) {
     cb->get_current_framebuffer = nullptr;
     cb->get_proc_address = nullptr;
 
+    return true;
+}
+
+bool VulkanContext::ensureInitialized() {
+    if (initialized) {
+        return true;
+    }
+
+    LOGI("VulkanContext::ensureInitialized: initializing Vulkan instance, GPU, and device...");
+
     if (instance == VK_NULL_HANDLE) {
         if (!createInstance()) {
+            LOGE("Failed to create Vulkan instance in ensureInitialized");
             return false;
         }
     }
 
     if (gpu == VK_NULL_HANDLE) {
         if (!selectPhysicalDevice()) {
+            LOGE("Failed to select physical device in ensureInitialized");
             return false;
         }
     }
 
     if (device == VK_NULL_HANDLE) {
         if (!createDevice()) {
+            LOGE("Failed to create Vulkan device in ensureInitialized");
             return false;
         }
     }
 
     initialized = true;
+    LOGI("VulkanContext successfully initialized!");
     return true;
 }
 
 const struct retro_hw_render_interface_vulkan* VulkanContext::getInterface() {
+    if (!initialized) {
+        ensureInitialized();
+    }
     libretroInterface.interface_type = RETRO_HW_RENDER_INTERFACE_VULKAN;
     libretroInterface.interface_version = RETRO_HW_RENDER_INTERFACE_VULKAN_VERSION;
     libretroInterface.handle = this;
@@ -201,7 +218,14 @@ bool VulkanContext::createInstance() {
             &VulkanContext::createInstanceWrapper,
             this
         );
-    } else {
+        if (instance != VK_NULL_HANDLE) {
+            LOGI("Core created VkInstance via create_instance: %p", instance);
+        } else {
+            LOGW("Core create_instance returned VK_NULL_HANDLE, falling back to frontend instance creation");
+        }
+    }
+
+    if (instance == VK_NULL_HANDLE) {
         std::vector<const char*> extensions = {
             VK_KHR_SURFACE_EXTENSION_NAME,
             VK_KHR_ANDROID_SURFACE_EXTENSION_NAME
@@ -429,11 +453,14 @@ bool VulkanContext::createDevice() {
 
         if (success) {
             device = coreContext.device;
-            gpu = coreContext.gpu;
+            if (coreContext.gpu != VK_NULL_HANDLE) {
+                gpu = coreContext.gpu;
+            }
             queue = coreContext.queue;
             queueFamilyIndex = coreContext.queue_family_index;
             coreCreatedDevice = true;
-            LOGI("Device created by core via create_device2 (dev=%p, queue=%p)", device, queue);
+            LOGI("Device created by core via create_device2 (dev=%p, queue=%p, queue_idx=%u)",
+                 device, queue, queueFamilyIndex);
         } else {
             LOGW("Core create_device2 returned false, falling back to frontend device creation");
         }
@@ -457,11 +484,14 @@ bool VulkanContext::createDevice() {
 
         if (success) {
             device = coreContext.device;
-            gpu = coreContext.gpu;
+            if (coreContext.gpu != VK_NULL_HANDLE) {
+                gpu = coreContext.gpu;
+            }
             queue = coreContext.queue;
             queueFamilyIndex = coreContext.queue_family_index;
             coreCreatedDevice = true;
-            LOGI("Device created by core via create_device (dev=%p, queue=%p)", device, queue);
+            LOGI("Device created by core via create_device (dev=%p, queue=%p, queue_idx=%u)",
+                 device, queue, queueFamilyIndex);
         } else {
             LOGW("Core create_device returned false, falling back to frontend device creation");
         }

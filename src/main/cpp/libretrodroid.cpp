@@ -232,6 +232,10 @@ void LibretroDroid::onSurfaceCreated() {
 
     if (VulkanContext::getInstance().isVulkanRequested()) {
         LOGI("Initializing Vulkan rendering in onSurfaceCreated");
+        if (!VulkanContext::getInstance().ensureInitialized()) {
+            LOGE("Failed to ensure VulkanContext is initialized in onSurfaceCreated");
+            return;
+        }
         vulkanRenderer = std::make_unique<VulkanRenderer>();
         vulkanRenderer->initialize();
         vulkanRenderer->updateAspectRatio(getAspectRatio());

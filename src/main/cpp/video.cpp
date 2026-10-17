@@ -174,9 +174,14 @@ void Video::renderFrame() {
     // Bind frontend VAO & configure state
     if (vao != 0) {
         glBindVertexArray(vao);
+    } else {
+        glBindVertexArray(0);
     }
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+    glUseProgram(0);
+    glActiveTexture(GL_TEXTURE0);
 
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_STENCIL_TEST);
@@ -187,6 +192,8 @@ void Video::renderFrame() {
 
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glDepthMask(GL_TRUE);
+
+    glViewport(0, 0, videoLayout.getScreenWidth(), videoLayout.getScreenHeight());
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
@@ -261,29 +268,57 @@ void Video::renderFrame() {
         glUseProgram(0);
     }
 
-    // Restore previous OpenGL state
-    if (prevVao != 0) {
-        glBindVertexArray(prevVao);
-    } else if (vao != 0) {
+    // Clean up frontend vertex array
+    if (vao != 0) {
         glBindVertexArray(0);
     }
-    glBindBuffer(GL_ARRAY_BUFFER, prevVbo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, prevEbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
-    glUseProgram(prevProg);
-    glActiveTexture(prevActiveTex);
-    glBindTexture(GL_TEXTURE_2D, prevTex2D);
 
-    if (prevDepthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
-    if (prevStencilTest) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
-    if (prevScissorTest) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
-    if (prevCullFace) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
-    if (prevBlend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
-    if (prevDither) glEnable(GL_DITHER); else glDisable(GL_DITHER);
+    // Restore previous OpenGL state
+    // Cores (like Dolphin) maintaining an active offscreen rendering context outside the frontend's
+    // composition pass need their state restored. Cores that unbind before the video callback
+    // (prevFbo == 0) or render directly to the hardware framebuffer (prevFbo == getCurrentFramebuffer())
+    // have completed their frame presentation and require clean, unclipped GLES state for eglSwapBuffers.
+    GLint currentHwFbo = static_cast<GLint>(getCurrentFramebuffer());
+    if (prevFbo != 0 && prevFbo != currentHwFbo) {
+        if (prevVao != 0) {
+            glBindVertexArray(prevVao);
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, prevVbo);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, prevEbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
+        glUseProgram(prevProg);
+        glActiveTexture(prevActiveTex);
+        glBindTexture(GL_TEXTURE_2D, prevTex2D);
 
-    glColorMask(prevColorMask[0], prevColorMask[1], prevColorMask[2], prevColorMask[3]);
-    glDepthMask(prevDepthMask);
-    glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
+        if (prevDepthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+        if (prevStencilTest) glEnable(GL_STENCIL_TEST); else glDisable(GL_STENCIL_TEST);
+        if (prevScissorTest) glEnable(GL_SCISSOR_TEST); else glDisable(GL_SCISSOR_TEST);
+        if (prevCullFace) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+        if (prevBlend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+        if (prevDither) glEnable(GL_DITHER); else glDisable(GL_DITHER);
+
+        glColorMask(prevColorMask[0], prevColorMask[1], prevColorMask[2], prevColorMask[3]);
+        glDepthMask(prevDepthMask);
+        glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
+    } else {
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        glUseProgram(0);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_BLEND);
+        glDisable(GL_DITHER);
+
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDepthMask(GL_TRUE);
+        glViewport(0, 0, videoLayout.getScreenWidth(), videoLayout.getScreenHeight());
+    }
 }
 
 float Video::getScreenDensity() {

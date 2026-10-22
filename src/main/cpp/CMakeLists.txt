@@ -6,7 +6,8 @@ set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -fomit-frame-pointer -DNDEBUG")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Os -flto -fomit-frame-pointer -DNDEBUG")
+    set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} -flto -Wl,--gc-sections")
 endif()
 
 add_definitions("-DVFS_FRONTEND -DHAVE_STRL")
@@ -111,8 +112,9 @@ add_library(libretrodroid SHARED
         ${LIBRETRO_COMMON}
 )
 
-# Support 16k pages for Android 15
-target_link_options(libretrodroid PRIVATE "-Wl,-z,max-page-size=16384")
+# Support 16k pages for Android 15, size optimization, LTO, and dead section stripping
+target_compile_options(libretrodroid PRIVATE -Os -flto)
+target_link_options(libretrodroid PRIVATE "-Wl,-z,max-page-size=16384" -flto -Wl,--gc-sections -Wl,--exclude-libs,ALL)
 
 # add lib dependencies
 target_link_libraries(libretrodroid

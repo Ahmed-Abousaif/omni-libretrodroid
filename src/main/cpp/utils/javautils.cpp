@@ -21,7 +21,7 @@
 namespace libretrodroid {
 
 jint JavaUtils::throwRetroException(JNIEnv* env, int errorCode) {
-    const char *className = "com/swordfish/libretrodroid/RetroException";
+    const char *className = "com/omnidroid/libretrodroid/RetroException";
     jclass clazz = env->FindClass(className);
     jmethodID constructor = env->GetMethodID(clazz, "<init>", "(I)V");
     auto exception = (jthrowable) env->NewObject(clazz, constructor, errorCode);
@@ -29,7 +29,7 @@ jint JavaUtils::throwRetroException(JNIEnv* env, int errorCode) {
 }
 
 Variable JavaUtils::variableFromJava(JNIEnv *env, jobject obj) {
-    jclass variableClass = env->FindClass("com/swordfish/libretrodroid/Variable");
+    jclass variableClass = env->FindClass("com/omnidroid/libretrodroid/Variable");
 
     jfieldID jKeyField = env->GetFieldID(variableClass, "key", "Ljava/lang/String;");
     jfieldID jValueField = env->GetFieldID(variableClass, "value", "Ljava/lang/String;");
@@ -89,7 +89,7 @@ std::unordered_map<std::string, std::string> JavaUtils::stringMapFromJava(JNIEnv
 }
 
 ShaderManager::Config JavaUtils::shaderFromJava(JNIEnv *env, jobject obj) {
-    jclass jShaderClass = env->FindClass("com/swordfish/libretrodroid/GLRetroShader");
+    jclass jShaderClass = env->FindClass("com/omnidroid/libretrodroid/GLRetroShader");
 
     jfieldID jTypeField = env->GetFieldID(jShaderClass, "type", "I");
     jfieldID jParamsField = env->GetFieldID(jShaderClass, "params", "Ljava/util/Map;");

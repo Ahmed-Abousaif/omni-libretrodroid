@@ -15,6 +15,6 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-package com.swordfish.libretrodroid
+package com.omnidroid.libretrodroid
 
 internal data class GLRetroShader(val type: Int, val params: Map<String, String> = emptyMap())

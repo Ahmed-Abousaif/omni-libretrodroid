@@ -1,4 +1,4 @@
-package com.swordfish.libretrodroid
+package com.omnidroid.libretrodroid
 
 import java.lang.RuntimeException
 

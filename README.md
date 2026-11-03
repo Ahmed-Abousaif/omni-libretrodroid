@@ -61,7 +61,7 @@ omni-libretrodroid/
 │   ├── input.cpp            # Libretro Controller & Touch Routing
 │   └── vfs.cpp              # Android Virtual File System Interface
 └── src/main/java/
-    └── com/swordfish/libretrodroid/
+    └── com/omnidroid/libretrodroid/
         ├── GLRetroView.kt   # SurfaceView Component & Thread Dispatcher
         └── LibretroDroid.kt # JNI Native Declarations
 ```

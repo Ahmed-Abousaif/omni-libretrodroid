@@ -1,5 +1,5 @@
 # Keep JNI bindings and public LibretroDroid APIs
--keep class com.swordfish.libretrodroid.** { *; }
+-keep class com.omnidroid.libretrodroid.** { *; }
 -keepclassmembers class * {
     native <methods>;
 }

@@ -15,7 +15,7 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-package com.swordfish.libretrodroid.gamepad
+package com.omnidroid.libretrodroid.gamepad
 
 import android.view.KeyEvent
 

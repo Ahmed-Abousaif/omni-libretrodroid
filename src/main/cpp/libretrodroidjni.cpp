@@ -57,21 +57,21 @@ extern "C" {
 
 extern "C" {
 
-JNIEXPORT jint JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_availableDisks(
+JNIEXPORT jint JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_availableDisks(
     JNIEnv* env,
     jclass obj
 ) {
     return LibretroDroid::getInstance().availableDisks();
 }
 
-JNIEXPORT jint JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_currentDisk(
+JNIEXPORT jint JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_currentDisk(
     JNIEnv* env,
     jclass obj
 ) {
     return LibretroDroid::getInstance().currentDisk();
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_changeDisk(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_changeDisk(
     JNIEnv* env,
     jclass obj,
     jint index
@@ -79,7 +79,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_changeDisk
     return LibretroDroid::getInstance().changeDisk(index);
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_updateVariable(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_updateVariable(
     JNIEnv* env,
     jclass obj,
     jobject variable
@@ -88,11 +88,11 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_updateVari
     Environment::getInstance().updateVariable(v.key, v.value);
 }
 
-JNIEXPORT jobjectArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_getVariables(
+JNIEXPORT jobjectArray JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_getVariables(
     JNIEnv* env,
     jclass obj
 ) {
-    jclass variableClass = env->FindClass("com/swordfish/libretrodroid/Variable");
+    jclass variableClass = env->FindClass("com/omnidroid/libretrodroid/Variable");
     jmethodID variableMethodID = env->GetMethodID(variableClass, "<init>", "()V");
 
     auto variables = Environment::getInstance().getVariables();
@@ -121,17 +121,17 @@ JNIEXPORT jobjectArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_ge
     return result;
 }
 
-JNIEXPORT jobjectArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_getControllers(
+JNIEXPORT jobjectArray JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_getControllers(
     JNIEnv* env,
     jclass obj
 ) {
-    jclass variableClass = env->FindClass("[Lcom/swordfish/libretrodroid/Controller;");
+    jclass variableClass = env->FindClass("[Lcom/omnidroid/libretrodroid/Controller;");
 
     auto controllers = Environment::getInstance().getControllers();
     jobjectArray result = env->NewObjectArray(controllers.size(), variableClass, nullptr);
 
     for (int i = 0; i < controllers.size(); i++) {
-        jclass variableClass2 = env->FindClass("com/swordfish/libretrodroid/Controller");
+        jclass variableClass2 = env->FindClass("com/omnidroid/libretrodroid/Controller");
         jobjectArray controllerArray = env->NewObjectArray(
             controllers[i].size(),
             variableClass2,
@@ -163,7 +163,7 @@ JNIEXPORT jobjectArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_ge
     return result;
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setControllerType(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_setControllerType(
     JNIEnv* env,
     jclass obj,
     jint port,
@@ -172,7 +172,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setControl
     LibretroDroid::getInstance().setControllerType(port, type);
 }
 
-JNIEXPORT jboolean JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_unserializeState(
+JNIEXPORT jboolean JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_unserializeState(
     JNIEnv* env,
     jclass obj,
     jbyteArray state
@@ -194,7 +194,7 @@ JNIEXPORT jboolean JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_unseri
     }
 }
 
-JNIEXPORT jbyteArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_serializeState(
+JNIEXPORT jbyteArray JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_serializeState(
     JNIEnv* env,
     jclass obj
 ) {
@@ -220,7 +220,7 @@ JNIEXPORT jbyteArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_seri
     return nullptr;
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setCheat(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_setCheat(
     JNIEnv* env,
     jclass obj,
     jint index,
@@ -236,7 +236,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setCheat(
     }
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_resetCheat(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_resetCheat(
     JNIEnv* env,
     jclass obj
 ) {
@@ -248,7 +248,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_resetCheat
     }
 }
 
-JNIEXPORT jboolean JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_unserializeSRAM(
+JNIEXPORT jboolean JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_unserializeSRAM(
     JNIEnv* env,
     jclass obj,
     jbyteArray sram
@@ -273,7 +273,7 @@ JNIEXPORT jboolean JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_unseri
     }
 }
 
-JNIEXPORT jbyteArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_serializeSRAM(
+JNIEXPORT jbyteArray JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_serializeSRAM(
     JNIEnv* env,
     jclass obj
 ) {
@@ -300,7 +300,7 @@ JNIEXPORT jbyteArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_seri
     return nullptr;
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_reset(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_reset(
     JNIEnv* env,
     jclass obj
 ) {
@@ -312,7 +312,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_reset(
     }
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setSurface(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_setSurface(
     JNIEnv* env,
     jclass obj,
     jobject surface
@@ -325,14 +325,14 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setSurface
     }
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_onSurfaceDestroyed(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_onSurfaceDestroyed(
     JNIEnv* env,
     jclass obj
 ) {
     LibretroDroid::getInstance().onSurfaceDestroyed();
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_onSurfaceChanged(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_onSurfaceChanged(
     JNIEnv* env,
     jclass obj,
     jint width,
@@ -341,14 +341,14 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_onSurfaceC
     LibretroDroid::getInstance().onSurfaceChanged(width, height);
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_onSurfaceCreated(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_onSurfaceCreated(
     JNIEnv* env,
     jclass obj
 ) {
     LibretroDroid::getInstance().onSurfaceCreated();
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_onMotionEvent(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_onMotionEvent(
     JNIEnv* env,
     jclass obj,
     jint port,
@@ -359,7 +359,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_onMotionEv
     LibretroDroid::getInstance().onMotionEvent(port, source, xAxis, yAxis);
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_onTouchEvent(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_onTouchEvent(
     JNIEnv* env,
     jclass obj,
     jfloat xAxis,
@@ -368,7 +368,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_onTouchEve
     LibretroDroid::getInstance().onTouchEvent(xAxis, yAxis);
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_onKeyEvent(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_onKeyEvent(
     JNIEnv* env,
     jclass obj,
     jint port,
@@ -378,7 +378,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_onKeyEvent
     LibretroDroid::getInstance().onKeyEvent(port, action, keyCode);
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_create(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_create(
     JNIEnv* env,
     jclass obj,
     jint GLESVersion,
@@ -456,7 +456,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_create(
     }
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_loadGameFromPath(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_loadGameFromPath(
     JNIEnv* env,
     jclass obj,
     jstring gameFilePath
@@ -471,7 +471,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_loadGameFr
     }
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_loadGameFromBytes(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_loadGameFromBytes(
     JNIEnv* env,
     jclass obj,
     jbyteArray gameFileBytes
@@ -492,7 +492,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_loadGameFr
     }
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_loadGameFromVirtualFiles(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_loadGameFromVirtualFiles(
         JNIEnv* env,
         jclass obj,
         jobject virtualFileList
@@ -500,12 +500,12 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_loadGameFr
 
     try {
         jmethodID getVirtualFileMethodID = env->GetMethodID(
-                env->FindClass("com/swordfish/libretrodroid/DetachedVirtualFile"),
+                env->FindClass("com/omnidroid/libretrodroid/DetachedVirtualFile"),
                 "getVirtualPath",
                 "()Ljava/lang/String;"
         );
         jmethodID getFileDescriptorMethodID = env->GetMethodID(
-                env->FindClass("com/swordfish/libretrodroid/DetachedVirtualFile"),
+                env->FindClass("com/omnidroid/libretrodroid/DetachedVirtualFile"),
                 "getFileDescriptor",
                 "()I"
         );
@@ -529,7 +529,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_loadGameFr
     }
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_destroy(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_destroy(
     JNIEnv* env,
     jclass obj
 ) {
@@ -541,7 +541,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_destroy(
     }
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_resume(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_resume(
     JNIEnv* env,
     jclass obj
 ) {
@@ -553,7 +553,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_resume(
     }
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_pause(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_pause(
     JNIEnv* env,
     jclass obj
 ) {
@@ -565,7 +565,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_pause(
     }
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_step(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_step(
     JNIEnv* env,
     jclass obj,
     jobject glRetroView
@@ -592,7 +592,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_step(
     }
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setRumbleEnabled(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_setRumbleEnabled(
     JNIEnv* env,
     jclass obj,
     jboolean enabled
@@ -600,7 +600,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setRumbleE
     LibretroDroid::getInstance().setRumbleEnabled(enabled);
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setNonBlockingVulkanPresent(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_setNonBlockingVulkanPresent(
     JNIEnv* env,
     jclass obj,
     jboolean enabled
@@ -608,7 +608,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setNonBloc
     LibretroDroid::getInstance().setNonBlockingVulkanPresent(enabled);
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setFrameSpeed(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_setFrameSpeed(
     JNIEnv* env,
     jclass obj,
     jint speed
@@ -616,7 +616,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setFrameSp
     LibretroDroid::getInstance().setFrameSpeed(speed);
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setAudioEnabled(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_setAudioEnabled(
     JNIEnv* env,
     jclass obj,
     jboolean enabled
@@ -624,7 +624,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setAudioEn
     LibretroDroid::getInstance().setAudioEnabled(enabled);
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setShaderConfig(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_setShaderConfig(
     JNIEnv* env,
     jclass obj,
     jobject shaderConfig
@@ -632,7 +632,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setShaderC
     LibretroDroid::getInstance().setShaderConfig(JavaUtils::shaderFromJava(env, shaderConfig));
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setCacheDirectory(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_setCacheDirectory(
     JNIEnv* env,
     jclass obj,
     jstring cacheDir
@@ -643,7 +643,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setCacheDi
     }
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setViewport(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_setViewport(
     JNIEnv* env,
     jclass obj,
     jfloat x,
@@ -654,7 +654,7 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setViewpor
     LibretroDroid::getInstance().setViewport(Rect(x, y, width, height));
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setViewportAlignment(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_setViewportAlignment(
         JNIEnv* env,
         jclass obj,
         jint viewportAlignment
@@ -662,14 +662,14 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setViewpor
     LibretroDroid::getInstance().setViewportAlignment(viewportAlignment);
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_refreshAspectRatio(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_refreshAspectRatio(
     JNIEnv* env,
     jclass obj
 ) {
     LibretroDroid::getInstance().refreshAspectRatio();
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setProfilingEnabled(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_setProfilingEnabled(
     JNIEnv* env,
     jclass obj,
     jboolean enabled
@@ -677,14 +677,14 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setProfili
     LRDStats::setProfilingEnabled(enabled);
 }
 
-JNIEXPORT jboolean JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_isProfilingEnabled(
+JNIEXPORT jboolean JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_isProfilingEnabled(
     JNIEnv* env,
     jclass obj
 ) {
     return LRDStats::isProfilingEnabled();
 }
 
-JNIEXPORT jdoubleArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_getProfilingStats(
+JNIEXPORT jdoubleArray JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_getProfilingStats(
     JNIEnv* env,
     jclass obj
 ) {
@@ -706,7 +706,7 @@ JNIEXPORT jdoubleArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_ge
     return result;
 }
 
-JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_onTrimMemory(
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_onTrimMemory(
     JNIEnv* env,
     jclass obj,
     jint level

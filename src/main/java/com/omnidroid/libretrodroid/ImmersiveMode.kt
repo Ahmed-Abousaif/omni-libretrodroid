@@ -1,4 +1,4 @@
-package com.swordfish.libretrodroid
+package com.omnidroid.libretrodroid
 
 data class ImmersiveMode(
     val downscaledWidth: Int = 8,

@@ -15,7 +15,7 @@
  *     along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-package com.swordfish.libretrodroid
+package com.omnidroid.libretrodroid
 
 import android.app.ActivityManager
 import android.content.Context
@@ -32,8 +32,8 @@ import androidx.lifecycle.LifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.OnLifecycleEvent
 import androidx.lifecycle.coroutineScope
-import com.swordfish.libretrodroid.KtUtils.awaitUninterruptibly
-import com.swordfish.libretrodroid.gamepad.GamepadsManager
+import com.omnidroid.libretrodroid.KtUtils.awaitUninterruptibly
+import com.omnidroid.libretrodroid.gamepad.GamepadsManager
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow

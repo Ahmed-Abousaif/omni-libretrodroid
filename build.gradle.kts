@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "com.swordfish.libretrodroid"
+    namespace = "com.omnidroid.libretrodroid"
 
     defaultConfig {
         minSdk = 24

@@ -19,6 +19,7 @@
 #define LIBRETRODROID_INPUT_H
 
 #include <cstdint>
+#include <mutex>
 #include <unordered_set>
 #include <array>
 
@@ -65,6 +66,10 @@ private:
     bool anyPressed(unsigned int port, unsigned int id) const;
     int convertAndroidToLibretroKey(int keyCode) const;
 
+    // VulkanRetroView feeds input from the UI/coroutine thread while the
+    // emulation thread reads it inside retro_run → input_state. Guard the
+    // whole pad set so heavy cores (long steps) cannot tear unordered_set.
+    mutable std::mutex padsMutex;
     GamePadState pads[4];
 };
 

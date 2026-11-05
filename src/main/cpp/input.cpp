@@ -29,6 +29,8 @@ namespace libretrodroid {
 int16_t Input::getInputState(unsigned port, unsigned device, unsigned index, unsigned id) {
     if (port >= 4 || port < 0) return 0;
 
+    std::lock_guard<std::mutex> lock(padsMutex);
+
     unsigned deviceType = device & RETRO_DEVICE_MASK;
 
     switch (deviceType) {
@@ -221,7 +223,11 @@ void Input::onKeyEvent(unsigned int port, int action, int keyCode) {
     if (retroKeyCode == UNKNOWN_KEY) {
         return;
     }
+    if (port >= 4) {
+        return;
+    }
 
+    std::lock_guard<std::mutex> lock(padsMutex);
     if (action == AKEY_EVENT_ACTION_DOWN) {
         pads[port].pressedKeys.insert(retroKeyCode);
     } else if (action == AKEY_EVENT_ACTION_UP) {
@@ -230,6 +236,11 @@ void Input::onKeyEvent(unsigned int port, int action, int keyCode) {
 }
 
 void Input::onMotionEvent(int port, int motionSource, float xAxis, float yAxis) {
+    if (port < 0 || port >= 4) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(padsMutex);
     switch (motionSource) {
         case Input::MOTION_SOURCE_DPAD:
             pads[port].dpadXAxis = (int) round(xAxis);

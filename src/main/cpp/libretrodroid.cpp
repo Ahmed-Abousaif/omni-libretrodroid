@@ -239,6 +239,7 @@ void LibretroDroid::onSurfaceCreated() {
             return;
         }
         vulkanRenderer = std::make_unique<VulkanRenderer>();
+        vulkanRenderer->setAsyncPresentation(asyncVulkanPresentation);
         if (!cacheDirectory.empty()) {
             vulkanRenderer->setCacheDirectory(cacheDirectory);
         }
@@ -557,6 +558,7 @@ void LibretroDroid::pause() {
     audio->stop();
 
     if (vulkanRenderer) {
+        vulkanRenderer->flushAsync();
         vulkanRenderer->savePipelineCache();
     }
 
@@ -582,7 +584,7 @@ void LibretroDroid::step() {
         // MAILBOX returns immediately; the frame wait below runs after the lock
         // is released, and only if MAILBOX was actually selected.
         vulkanRenderer->setAllowMailbox(!fpsSync->usesVSync() || nonBlockingVulkanPresent);
-        fpsSync->setSoftwarePace(nonBlockingVulkanPresent && vulkanRenderer->isUsingMailbox());
+        fpsSync->setSoftwarePace(nonBlockingVulkanPresent || vulkanRenderer->isUsingMailbox());
     }
 
     unsigned frames = 1;
@@ -616,7 +618,11 @@ void LibretroDroid::step() {
         const bool hasNewCoreFrame = VulkanContext::getInstance().hasNewFrame();
         const bool isRendererDirty = vulkanRenderer->isDirty();
         if (!skipDuplicateFrames || hasNewCoreFrame || isRendererDirty) {
-            vulkanRenderer->renderFrame();
+            if (vulkanRenderer->isAsyncPresentationEnabled()) {
+                vulkanRenderer->requestRenderAsync();
+            } else {
+                vulkanRenderer->renderFrame();
+            }
             VulkanContext::getInstance().consumeNewFrame();
             if (profiling) {
                 gpuTimeMs = vulkanRenderer->getLastGpuTimeMs();
@@ -698,6 +704,17 @@ void LibretroDroid::setRumbleEnabled(bool enabled) {
 
 void LibretroDroid::setNonBlockingVulkanPresent(bool enabled) {
     nonBlockingVulkanPresent = enabled;
+}
+
+void LibretroDroid::setAsyncVulkanPresentation(bool enabled) {
+    asyncVulkanPresentation = enabled;
+    if (vulkanRenderer) {
+        vulkanRenderer->setAsyncPresentation(enabled);
+    }
+}
+
+bool LibretroDroid::isAsyncVulkanPresentation() const {
+    return asyncVulkanPresentation;
 }
 
 bool LibretroDroid::isRumbleEnabled() const {

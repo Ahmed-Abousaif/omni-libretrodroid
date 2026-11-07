@@ -118,6 +118,8 @@ public class LibretroDroid {
 
     public static native void setRumbleEnabled(boolean enabled);
     public static native void setNonBlockingVulkanPresent(boolean enabled);
+    public static native void setAsyncVulkanPresentation(boolean enabled);
+    public static native boolean isAsyncVulkanPresentation();
     public static native void setFrameSpeed(int speed);
     public static native void setAudioEnabled(boolean enabled);
     public static native void setShaderConfig(GLRetroShader shader);

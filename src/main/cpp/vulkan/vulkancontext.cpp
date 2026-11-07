@@ -39,6 +39,30 @@
 #define VK_ARM_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME "VK_ARM_rasterization_order_attachment_access"
 #endif
 
+#ifndef VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME
+#define VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME "VK_KHR_push_descriptor"
+#endif
+
+#ifndef VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME
+#define VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME "VK_EXT_swapchain_maintenance1"
+#endif
+
+#ifndef VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME
+#define VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME "VK_KHR_swapchain_maintenance1"
+#endif
+
+#ifndef VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME
+#define VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME "VK_GOOGLE_display_timing"
+#endif
+
+#ifndef VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME
+#define VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME "VK_EXT_index_type_uint8"
+#endif
+
+#ifndef VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME
+#define VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME "VK_EXT_subgroup_size_control"
+#endif
+
 #ifndef VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT
 #define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT static_cast<VkStructureType>(1000237000)
 #endif
@@ -140,6 +164,10 @@ void VulkanContext::deinitialize() {
     }
     memoryBudgetSupported = false;
     isUma = false;
+    pushDescriptorSupported = false;
+    dynamicRenderingSupported = false;
+    synchronization2Supported = false;
+    swapchainMaintenance1Supported = false;
 }
 
 void VulkanContext::setNegotiationInterface(const struct retro_hw_render_context_negotiation_interface_vulkan& iface) {
@@ -554,8 +582,12 @@ void VulkanContext::applyTargetFrameRate() {
 
     if (pfnSetFrameRateWithStrategy != nullptr) {
         // 0 = ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT
-        // 0 = ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS
-        int32_t res = pfnSetFrameRateWithStrategy(nativeWindow, targetFps, 0, 0);
+        // 1 = ANATIVEWINDOW_CHANGE_FRAME_RATE_ALWAYS (allows VRR / LTPO displays to match the exact content refresh rate)
+        int32_t res = pfnSetFrameRateWithStrategy(nativeWindow, targetFps, 0, 1);
+        if (res != 0) {
+            // Fallback to seamless-only
+            res = pfnSetFrameRateWithStrategy(nativeWindow, targetFps, 0, 0);
+        }
         LOGI("ANativeWindow_setFrameRateWithChangeFrameRateStrategy(%.2f) returned %d", targetFps, res);
     } else if (pfnSetFrameRate != nullptr) {
         int32_t res = pfnSetFrameRate(nativeWindow, targetFps, 0);
@@ -687,6 +719,7 @@ bool VulkanContext::createDevice() {
         }
         addExtIfSupported(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
         addExtIfSupported(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+        addExtIfSupported(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
         addExtIfSupported("VK_KHR_create_renderpass2");
         addExtIfSupported("VK_KHR_separate_depth_stencil_layouts");
         addExtIfSupported("VK_KHR_timeline_semaphore");
@@ -696,9 +729,20 @@ bool VulkanContext::createDevice() {
         addExtIfSupported(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
         addExtIfSupported(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
         addExtIfSupported("VK_EXT_line_rasterization");
+        addExtIfSupported(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+        addExtIfSupported(VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+        addExtIfSupported(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
+        addExtIfSupported(VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME);
+        addExtIfSupported(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
         // Mobile TBDR rasterization order attachment access (Qualcomm Adreno & ARM Mali)
         addExtIfSupported(VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME);
         addExtIfSupported(VK_ARM_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME);
+        // Dolphin (GameCube/Wii) & PPSSPP (PSP) hardware pipeline extensions
+        addExtIfSupported("VK_EXT_vertex_attribute_divisor");
+        addExtIfSupported("VK_KHR_sampler_mirror_clamp_to_edge");
+        addExtIfSupported("VK_EXT_shader_stencil_export");
+        addExtIfSupported("VK_EXT_depth_clip_enable");
+        addExtIfSupported("VK_EXT_fragment_shader_interlock");
 
         // 3. Query base Vulkan 1.0 features
         VkPhysicalDeviceFeatures supportedFeatures {};
@@ -725,15 +769,35 @@ bool VulkanContext::createDevice() {
         enabledFeatures.shaderStorageBufferArrayDynamicIndexing = supportedFeatures.shaderStorageBufferArrayDynamicIndexing;
         enabledFeatures.shaderClipDistance = supportedFeatures.shaderClipDistance;
         enabledFeatures.shaderCullDistance = supportedFeatures.shaderCullDistance;
+        // GameCube / Wii (Dolphin): hardware logic op blending for TEV unit
+        enabledFeatures.logicOp = supportedFeatures.logicOp;
+        // GameCube / Wii (Dolphin): precise occlusion & bounding box queries
+        enabledFeatures.occlusionQueryPrecise = supportedFeatures.occlusionQueryPrecise;
+        enabledFeatures.pipelineStatisticsQuery = supportedFeatures.pipelineStatisticsQuery;
+        enabledFeatures.inheritedQueries = supportedFeatures.inheritedQueries;
+        // PSP (PPSSPP) & Wii (Dolphin): hardware wide lines and point sizes
+        enabledFeatures.wideLines = supportedFeatures.wideLines;
+        enabledFeatures.largePoints = supportedFeatures.largePoints;
+        // Compressed texture support across PSP (DXT/BC) and GameCube/Wii (CMPR/ETC2/ASTC)
+        enabledFeatures.textureCompressionBC = supportedFeatures.textureCompressionBC;
+        enabledFeatures.textureCompressionETC2 = supportedFeatures.textureCompressionETC2;
+        enabledFeatures.textureCompressionASTC_LDR = supportedFeatures.textureCompressionASTC_LDR;
+        // Shader math optimizations
+        enabledFeatures.shaderInt16 = supportedFeatures.shaderInt16;
+        enabledFeatures.shaderInt64 = supportedFeatures.shaderInt64;
+        enabledFeatures.shaderResourceResidency = supportedFeatures.shaderResourceResidency;
+        enabledFeatures.shaderResourceMinLod = supportedFeatures.shaderResourceMinLod;
 
-        LOGI("Vulkan 1.0 features: dualSrcBlend=%d, geomShader=%d, tessShader=%d, depthClamp=%d, anisotropy=%d, indepBlend=%d, multiDraw=%d",
+        LOGI("Vulkan 1.0 features: dualSrcBlend=%d, geomShader=%d, tessShader=%d, depthClamp=%d, anisotropy=%d, indepBlend=%d, multiDraw=%d, logicOp=%d, wideLines=%d",
              enabledFeatures.dualSrcBlend,
              enabledFeatures.geometryShader,
              enabledFeatures.tessellationShader,
              enabledFeatures.depthClamp,
              enabledFeatures.samplerAnisotropy,
              enabledFeatures.independentBlend,
-             enabledFeatures.multiDrawIndirect);
+             enabledFeatures.multiDrawIndirect,
+             enabledFeatures.logicOp,
+             enabledFeatures.wideLines);
 
         // 4. Query and chain Vulkan 1.1 / 1.2 / 1.3 / Extension features
         VkPhysicalDeviceProperties gpuProps {};
@@ -830,6 +894,13 @@ bool VulkanContext::createDevice() {
                 enabledVk12Features.descriptorBindingVariableDescriptorCount = supportedVk12Features.descriptorBindingVariableDescriptorCount;
                 enabledVk12Features.runtimeDescriptorArray = supportedVk12Features.runtimeDescriptorArray;
                 enabledVk12Features.descriptorBindingPartiallyBound = supportedVk12Features.descriptorBindingPartiallyBound;
+                enabledVk12Features.descriptorBindingSampledImageUpdateAfterBind = supportedVk12Features.descriptorBindingSampledImageUpdateAfterBind;
+                enabledVk12Features.descriptorBindingStorageImageUpdateAfterBind = supportedVk12Features.descriptorBindingStorageImageUpdateAfterBind;
+                enabledVk12Features.descriptorBindingUniformBufferUpdateAfterBind = supportedVk12Features.descriptorBindingUniformBufferUpdateAfterBind;
+                enabledVk12Features.descriptorBindingStorageBufferUpdateAfterBind = supportedVk12Features.descriptorBindingStorageBufferUpdateAfterBind;
+                enabledVk12Features.shaderStorageBufferArrayNonUniformIndexing = supportedVk12Features.shaderStorageBufferArrayNonUniformIndexing;
+                enabledVk12Features.shaderUniformBufferArrayNonUniformIndexing = supportedVk12Features.shaderUniformBufferArrayNonUniformIndexing;
+                enabledVk12Features.drawIndirectCount = supportedVk12Features.drawIndirectCount;
                 enabledVk12Features.shaderFloat16 = supportedVk12Features.shaderFloat16;
                 enabledVk12Features.shaderInt8 = supportedVk12Features.shaderInt8;
                 enabledVk12Features.samplerFilterMinmax = supportedVk12Features.samplerFilterMinmax;
@@ -837,18 +908,21 @@ bool VulkanContext::createDevice() {
                 enabledVk12Features.timelineSemaphore = supportedVk12Features.timelineSemaphore;
                 *ppEnabledNext = &enabledVk12Features;
                 ppEnabledNext = &enabledVk12Features.pNext;
-                LOGI("Vulkan 1.2 features enabled: descriptorIndexing=%d, shaderFloat16=%d, hostQueryReset=%d, timelineSem=%d",
-                     enabledVk12Features.descriptorIndexing, enabledVk12Features.shaderFloat16,
-                     enabledVk12Features.hostQueryReset, enabledVk12Features.timelineSemaphore);
+                LOGI("Vulkan 1.2 features enabled: descriptorIndexing=%d, bindlessUpdateAfterBind=%d, shaderFloat16=%d, hostQueryReset=%d, timelineSem=%d",
+                     enabledVk12Features.descriptorIndexing, enabledVk12Features.descriptorBindingSampledImageUpdateAfterBind,
+                     enabledVk12Features.shaderFloat16, enabledVk12Features.hostQueryReset, enabledVk12Features.timelineSemaphore);
             }
             if (deviceApiVersion >= VK_API_VERSION_1_3) {
                 enabledVk13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
                 enabledVk13Features.dynamicRendering = supportedVk13Features.dynamicRendering;
                 enabledVk13Features.synchronization2 = supportedVk13Features.synchronization2;
+                enabledVk13Features.maintenance4 = supportedVk13Features.maintenance4;
+                enabledVk13Features.inlineUniformBlock = supportedVk13Features.inlineUniformBlock;
                 *ppEnabledNext = &enabledVk13Features;
                 ppEnabledNext = &enabledVk13Features.pNext;
-                LOGI("Vulkan 1.3 features enabled: dynamicRendering=%d, synchronization2=%d",
-                     enabledVk13Features.dynamicRendering, enabledVk13Features.synchronization2);
+                LOGI("Vulkan 1.3 features enabled: dynamicRendering=%d, synchronization2=%d, maintenance4=%d, inlineUniformBlock=%d",
+                     enabledVk13Features.dynamicRendering, enabledVk13Features.synchronization2,
+                     enabledVk13Features.maintenance4, enabledVk13Features.inlineUniformBlock);
             }
             if (isExtSupported(VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME) ||
                 isExtSupported(VK_ARM_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME)) {
@@ -911,6 +985,10 @@ bool VulkanContext::createDevice() {
             LOGI("Frontend VkDevice created: %p, shared queue: %p", device, queue);
         }
         coreCreatedDevice = false;
+        pushDescriptorSupported = isExtSupported(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+        dynamicRenderingSupported = (deviceApiVersion >= VK_API_VERSION_1_3) || isExtSupported(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+        synchronization2Supported = (deviceApiVersion >= VK_API_VERSION_1_3) || isExtSupported(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+        swapchainMaintenance1Supported = isExtSupported(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME) || isExtSupported(VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
     }
 
     // Initialize sync fences for synchronization
@@ -929,6 +1007,19 @@ VkDevice VulkanContext::createDeviceWrapper(VkPhysicalDevice physicalDevice, voi
     auto* ctx = reinterpret_cast<VulkanContext*>(opaque);
     const bool budgetSupported = (ctx != nullptr) ? ctx->memoryBudgetSupported : VulkanContext::getInstance().memoryBudgetSupported;
 
+    uint32_t devExtCount = 0;
+    vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &devExtCount, nullptr);
+    std::vector<VkExtensionProperties> availableDevExts(devExtCount);
+    if (devExtCount > 0) {
+        vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &devExtCount, availableDevExts.data());
+    }
+    auto isExtSupported = [&](const char* name) -> bool {
+        for (const auto& ext : availableDevExts) {
+            if (strcmp(ext.extensionName, name) == 0) return true;
+        }
+        return false;
+    };
+
     std::vector<const char*> extensions;
     for (uint32_t i = 0; i < create_info->enabledExtensionCount; ++i) {
         extensions.push_back(create_info->ppEnabledExtensionNames[i]);
@@ -938,17 +1029,60 @@ VkDevice VulkanContext::createDeviceWrapper(VkPhysicalDevice physicalDevice, voi
         for (const auto& ext : extensions) {
             if (strcmp(ext, name) == 0) return;
         }
-        extensions.push_back(name);
+        if (isExtSupported(name)) {
+            extensions.push_back(name);
+            LOGI("createDeviceWrapper: Enabled extension: %s", name);
+        }
     };
 
     addExt(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     if (budgetSupported) {
         addExt(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     }
+    addExt(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    addExt(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+    addExt(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+    addExt(VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME);
+    addExt(VK_ARM_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME);
+    addExt(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
+    addExt(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
+    addExt("VK_EXT_line_rasterization");
+    addExt("VK_KHR_shader_float16_int8");
+    addExt("VK_KHR_16bit_storage");
+    addExt(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+    addExt("VK_KHR_create_renderpass2");
+    addExt("VK_KHR_separate_depth_stencil_layouts");
+    addExt(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+    addExt(VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+    addExt(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
+    addExt(VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME);
+    addExt(VK_EXT_SUBGROUP_SIZE_CONTROL_EXTENSION_NAME);
+    addExt("VK_EXT_vertex_attribute_divisor");
+    addExt("VK_KHR_sampler_mirror_clamp_to_edge");
+    addExt("VK_EXT_shader_stencil_export");
+    addExt("VK_EXT_depth_clip_enable");
+    addExt("VK_EXT_fragment_shader_interlock");
+
+    // Queue allocation optimization: allocate separate presentation queue if family supports >= 2
+    std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+    std::vector<float> queuePriorities;
+    if (create_info->queueCreateInfoCount > 0 && create_info->pQueueCreateInfos != nullptr) {
+        queueCreateInfos.assign(create_info->pQueueCreateInfos, create_info->pQueueCreateInfos + create_info->queueCreateInfoCount);
+        if (ctx != nullptr && ctx->maxQueueCount >= 2 && queueCreateInfos[0].queueCount == 1) {
+            queuePriorities = { 1.0f, 1.0f };
+            queueCreateInfos[0].queueCount = 2;
+            queueCreateInfos[0].pQueuePriorities = queuePriorities.data();
+            LOGI("createDeviceWrapper: Upgraded queue count from 1 to 2 for dedicated presentation queue");
+        }
+    }
 
     VkDeviceCreateInfo modified = *create_info;
     modified.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     modified.ppEnabledExtensionNames = extensions.data();
+    if (!queueCreateInfos.empty()) {
+        modified.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
+        modified.pQueueCreateInfos = queueCreateInfos.data();
+    }
 
     VkDevice dev = VK_NULL_HANDLE;
     VkResult res = vkCreateDevice(physicalDevice, &modified, nullptr, &dev);
@@ -956,6 +1090,20 @@ VkDevice VulkanContext::createDeviceWrapper(VkPhysicalDevice physicalDevice, voi
         LOGE("createDeviceWrapper: vkCreateDevice failed: %d", res);
         return VK_NULL_HANDLE;
     }
+
+    if (ctx != nullptr) {
+        ctx->pushDescriptorSupported = isExtSupported(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+        ctx->dynamicRenderingSupported = isExtSupported(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+        ctx->synchronization2Supported = isExtSupported(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+        ctx->swapchainMaintenance1Supported = isExtSupported(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME) || isExtSupported(VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+
+        if (!queueCreateInfos.empty() && queueCreateInfos[0].queueCount >= 2) {
+            vkGetDeviceQueue(dev, queueCreateInfos[0].queueFamilyIndex, 1, &ctx->presentationQueue);
+            ctx->presentationQueueFamilyIndex = queueCreateInfos[0].queueFamilyIndex;
+            LOGI("createDeviceWrapper: Assigned dedicated presentation queue %p", ctx->presentationQueue);
+        }
+    }
+
     return dev;
 }
 

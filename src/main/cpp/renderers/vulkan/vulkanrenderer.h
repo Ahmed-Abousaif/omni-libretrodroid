@@ -6,10 +6,131 @@
 #include <memory>
 #include <mutex>
 #include <utility>
+#include <thread>
+#include <condition_variable>
+#include <atomic>
 
 #include "../../vulkan/vulkancontext.h"
 #include "../../vulkan/vulkanshaders.h"
 #include "../../utils/rect.h"
+
+#ifndef VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME
+#define VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME "VK_KHR_push_descriptor"
+#endif
+
+#ifndef VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR
+#define VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR 0x00000001
+#endif
+
+#ifndef VK_STRUCTURE_TYPE_RENDERING_INFO_KHR
+#define VK_STRUCTURE_TYPE_RENDERING_INFO_KHR static_cast<VkStructureType>(1000044000)
+#endif
+
+#ifndef VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR
+#define VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR static_cast<VkStructureType>(1000044001)
+#endif
+
+#ifndef VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR
+#define VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR static_cast<VkStructureType>(1000044002)
+#endif
+
+#ifndef VK_STRUCTURE_TYPE_SUBMIT_INFO_2_KHR
+#define VK_STRUCTURE_TYPE_SUBMIT_INFO_2_KHR static_cast<VkStructureType>(1000314004)
+#endif
+
+#ifndef VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO_KHR
+#define VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO_KHR static_cast<VkStructureType>(1000314000)
+#endif
+
+#ifndef VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR
+#define VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR static_cast<VkStructureType>(1000314001)
+#endif
+
+#ifndef VK_KHR_dynamic_rendering
+typedef struct VkRenderingAttachmentInfoKHR {
+    VkStructureType sType;
+    const void* pNext;
+    VkImageView imageView;
+    VkImageLayout imageLayout;
+    VkResolveModeFlagBits resolveMode;
+    VkImageView resolveImageView;
+    VkImageLayout resolveImageLayout;
+    VkAttachmentLoadOp loadOp;
+    VkAttachmentStoreOp storeOp;
+    VkClearValue clearValue;
+} VkRenderingAttachmentInfoKHR;
+
+typedef struct VkRenderingInfoKHR {
+    VkStructureType sType;
+    const void* pNext;
+    VkRenderingFlags flags;
+    VkRect2D renderArea;
+    uint32_t layerCount;
+    uint32_t viewMask;
+    uint32_t colorAttachmentCount;
+    const VkRenderingAttachmentInfoKHR* pColorAttachments;
+    const VkRenderingAttachmentInfoKHR* pDepthAttachment;
+    const VkRenderingAttachmentInfoKHR* pStencilAttachment;
+} VkRenderingInfoKHR;
+
+typedef struct VkPipelineRenderingCreateInfoKHR {
+    VkStructureType sType;
+    const void* pNext;
+    uint32_t viewMask;
+    uint32_t colorAttachmentCount;
+    const VkFormat* pColorAttachmentFormats;
+    VkFormat depthAttachmentFormat;
+    VkFormat stencilAttachmentFormat;
+} VkPipelineRenderingCreateInfoKHR;
+
+typedef void (VKAPI_PTR *PFN_vkCmdBeginRenderingKHR)(VkCommandBuffer commandBuffer, const VkRenderingInfoKHR* pRenderingInfo);
+typedef void (VKAPI_PTR *PFN_vkCmdEndRenderingKHR)(VkCommandBuffer commandBuffer);
+#endif
+
+#ifndef VK_KHR_push_descriptor
+typedef void (VKAPI_PTR *PFN_vkCmdPushDescriptorSetKHR)(
+    VkCommandBuffer commandBuffer,
+    VkPipelineBindPoint pipelineBindPoint,
+    VkPipelineLayout layout,
+    uint32_t set,
+    uint32_t descriptorWriteCount,
+    const VkWriteDescriptorSet* pDescriptorWrites);
+#endif
+
+#ifndef VK_KHR_synchronization2
+typedef uint64_t VkPipelineStageFlags2KHR;
+typedef uint64_t VkAccessFlags2KHR;
+
+typedef struct VkCommandBufferSubmitInfoKHR {
+    VkStructureType sType;
+    const void* pNext;
+    VkCommandBuffer commandBuffer;
+    uint32_t deviceMask;
+} VkCommandBufferSubmitInfoKHR;
+
+typedef struct VkSemaphoreSubmitInfoKHR {
+    VkStructureType sType;
+    const void* pNext;
+    VkSemaphore semaphore;
+    uint64_t value;
+    VkPipelineStageFlags2KHR stageMask;
+    uint32_t deviceIndex;
+} VkSemaphoreSubmitInfoKHR;
+
+typedef struct VkSubmitInfo2KHR {
+    VkStructureType sType;
+    const void* pNext;
+    VkSubmitFlags flags;
+    uint32_t waitSemaphoreInfoCount;
+    const VkSemaphoreSubmitInfoKHR* pWaitSemaphoreInfos;
+    uint32_t commandBufferInfoCount;
+    const VkCommandBufferSubmitInfoKHR* pCommandBufferInfos;
+    uint32_t signalSemaphoreInfoCount;
+    const VkSemaphoreSubmitInfoKHR* pSignalSemaphoreInfos;
+} VkSubmitInfo2KHR;
+
+typedef VkResult (VKAPI_PTR *PFN_vkQueueSubmit2KHR)(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2KHR* pSubmits, VkFence fence);
+#endif
 
 namespace libretrodroid {
 
@@ -37,6 +158,12 @@ public:
     void onTrimMemory(int level);
 
     bool renderFrame();
+
+    // Asynchronous presentation pipeline
+    void setAsyncPresentation(bool enable);
+    bool isAsyncPresentationEnabled() const { return asyncPresentation; }
+    void requestRenderAsync();
+    void flushAsync();
 
     std::pair<float, float> getRelativePosition(float touchX, float touchY);
 
@@ -66,6 +193,10 @@ private:
 
     void initTimestampQueries();
     void cleanupTimestampQueries();
+
+    void startAsyncWorker();
+    void stopAsyncWorker();
+    void asyncWorkerLoop();
 
     struct PushConstants {
         float transform[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
@@ -133,6 +264,27 @@ private:
     bool timestampsSupported = false;
     double lastGpuTimeMs = -1.0;
     bool queryInFlight[MAX_FRAMES_IN_FLIGHT] = { false, false, false };
+
+    // Dynamic rendering & Modern extension function pointers
+    PFN_vkCmdBeginRenderingKHR pfnCmdBeginRendering = nullptr;
+    PFN_vkCmdEndRenderingKHR pfnCmdEndRendering = nullptr;
+    PFN_vkCmdPushDescriptorSetKHR pfnCmdPushDescriptorSetKHR = nullptr;
+    PFN_vkQueueSubmit2KHR pfnQueueSubmit2 = nullptr;
+
+    bool dynamicRenderingSupported = false;
+    bool pushDescriptorSupported = false;
+    bool synchronization2Supported = false;
+    bool isLetterboxed = true;
+
+    // Asynchronous Presentation Worker pipeline
+    std::thread asyncWorkerThread;
+    std::mutex asyncMutex;
+    std::condition_variable asyncCv;
+    std::condition_variable asyncDoneCv;
+    std::atomic<bool> asyncWorkerRunning { false };
+    std::atomic<bool> asyncFramePending { false };
+    std::atomic<bool> asyncFrameInFlight { false };
+    bool asyncPresentation = true;
 };
 
 } // namespace libretrodroid

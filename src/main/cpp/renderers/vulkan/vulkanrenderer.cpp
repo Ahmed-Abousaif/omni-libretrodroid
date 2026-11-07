@@ -4,8 +4,11 @@
 #include <chrono>
 #include <fstream>
 #include <cstdio>
+#include <unistd.h>
+#include <pthread.h>
 #include "../../environment.h"
 #include "../../stats.h"
+#include "../../utils/adpf.h"
 
 namespace libretrodroid {
 
@@ -29,21 +32,69 @@ bool VulkanRenderer::initialize() {
 
     LOGI("Initializing VulkanRenderer on device %p...", device);
 
+    dynamicRenderingSupported = VulkanContext::getInstance().isDynamicRenderingSupported();
+    pushDescriptorSupported = VulkanContext::getInstance().isPushDescriptorSupported();
+    synchronization2Supported = VulkanContext::getInstance().isSynchronization2Supported();
+
+    pfnCmdBeginRendering = reinterpret_cast<PFN_vkCmdBeginRenderingKHR>(
+        vkGetDeviceProcAddr(device, "vkCmdBeginRenderingKHR")
+    );
+    if (!pfnCmdBeginRendering) {
+        pfnCmdBeginRendering = reinterpret_cast<PFN_vkCmdBeginRenderingKHR>(
+            vkGetDeviceProcAddr(device, "vkCmdBeginRendering")
+        );
+    }
+    pfnCmdEndRendering = reinterpret_cast<PFN_vkCmdEndRenderingKHR>(
+        vkGetDeviceProcAddr(device, "vkCmdEndRenderingKHR")
+    );
+    if (!pfnCmdEndRendering) {
+        pfnCmdEndRendering = reinterpret_cast<PFN_vkCmdEndRenderingKHR>(
+            vkGetDeviceProcAddr(device, "vkCmdEndRendering")
+        );
+    }
+    if (!pfnCmdBeginRendering || !pfnCmdEndRendering) {
+        dynamicRenderingSupported = false;
+    }
+
+    pfnCmdPushDescriptorSetKHR = reinterpret_cast<PFN_vkCmdPushDescriptorSetKHR>(
+        vkGetDeviceProcAddr(device, "vkCmdPushDescriptorSetKHR")
+    );
+    if (!pfnCmdPushDescriptorSetKHR) {
+        pushDescriptorSupported = false;
+    }
+
+    pfnQueueSubmit2 = reinterpret_cast<PFN_vkQueueSubmit2KHR>(
+        vkGetDeviceProcAddr(device, "vkQueueSubmit2KHR")
+    );
+    if (!pfnQueueSubmit2) {
+        pfnQueueSubmit2 = reinterpret_cast<PFN_vkQueueSubmit2KHR>(
+            vkGetDeviceProcAddr(device, "vkQueueSubmit2")
+        );
+    }
+    if (!pfnQueueSubmit2) {
+        synchronization2Supported = false;
+    }
+
+    LOGI("VulkanRenderer pipeline features: dynamicRendering=%d, pushDescriptor=%d, synchronization2=%d",
+         dynamicRenderingSupported, pushDescriptorSupported, synchronization2Supported);
+
     if (!createSwapchain()) {
         LOGE("Failed to create Vulkan swapchain");
         return false;
     }
 
-    if (!createRenderPass()) {
-        LOGE("Failed to create Vulkan render pass");
-        return false;
-    }
+    if (!dynamicRenderingSupported) {
+        if (!createRenderPass()) {
+            LOGE("Failed to create Vulkan render pass");
+            return false;
+        }
 
-    // Now that render pass exists, create swapchain framebuffers
-    destroySwapchain();
-    if (!createSwapchain()) {
-        LOGE("Failed to recreate Vulkan swapchain framebuffers");
-        return false;
+        // Now that render pass exists, create swapchain framebuffers
+        destroySwapchain();
+        if (!createSwapchain()) {
+            LOGE("Failed to recreate Vulkan swapchain framebuffers");
+            return false;
+        }
     }
 
     initPipelineCache();
@@ -70,8 +121,12 @@ bool VulkanRenderer::initialize() {
 
     initTimestampQueries();
 
+    if (asyncPresentation) {
+        startAsyncWorker();
+    }
+
     initialized = true;
-    LOGI("VulkanRenderer successfully initialized!");
+    LOGI("VulkanRenderer successfully initialized (asyncPresentation=%d)!", asyncPresentation);
     return true;
 }
 
@@ -241,6 +296,8 @@ void VulkanRenderer::savePipelineCache() {
 void VulkanRenderer::onTrimMemory(int level) {
     LOGI("VulkanRenderer::onTrimMemory(level=%d)", level);
 
+    flushAsync();
+
     // Save pipeline cache on memory pressure or when UI is hidden
     savePipelineCache();
 
@@ -311,6 +368,7 @@ void VulkanRenderer::ensureRenderFinishedSemaphores(uint32_t count) {
 
 void VulkanRenderer::deinitialize() {
     LOGI("Deinitializing VulkanRenderer...");
+    stopAsyncWorker();
     VkDevice device = VulkanContext::getInstance().getDevice();
     if (device != VK_NULL_HANDLE) {
         waitQueueIdleLocked();
@@ -414,6 +472,7 @@ void VulkanRenderer::updateScreenSize(uint32_t width, uint32_t height) {
         isDirtyFlag = true;
     }
     if (initialized && (sizeChanged || surfaceMismatch())) {
+        flushAsync();
         waitQueueIdleLocked();
         destroySwapchain();
         createSwapchain();
@@ -661,7 +720,7 @@ bool VulkanRenderer::createSwapchain() {
         }
     }
 
-    if (renderPass != VK_NULL_HANDLE) {
+    if (!dynamicRenderingSupported && renderPass != VK_NULL_HANDLE) {
         swapchainFramebuffers.resize(actualImageCount);
         for (size_t i = 0; i < actualImageCount; ++i) {
             VkImageView attachments[] = { swapchainImageViews[i] };
@@ -688,6 +747,7 @@ bool VulkanRenderer::createSwapchain() {
 }
 
 void VulkanRenderer::destroySwapchain() {
+    flushAsync();
     VkDevice device = VulkanContext::getInstance().getDevice();
     if (device != VK_NULL_HANDLE) {
         for (auto fb : swapchainFramebuffers) {
@@ -778,6 +838,9 @@ bool VulkanRenderer::createPipeline() {
     dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     dslInfo.bindingCount = 1;
     dslInfo.pBindings = &binding;
+    if (pushDescriptorSupported) {
+        dslInfo.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+    }
 
     VkResult res = vkCreateDescriptorSetLayout(device, &dslInfo, nullptr, &descriptorSetLayout);
     if (res != VK_SUCCESS) {
@@ -889,8 +952,17 @@ bool VulkanRenderer::createPipeline() {
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = pipelineLayout;
-    pipelineInfo.renderPass = renderPass;
-    pipelineInfo.subpass = 0;
+    VkPipelineRenderingCreateInfoKHR renderingCreateInfo {};
+    if (dynamicRenderingSupported) {
+        renderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
+        renderingCreateInfo.colorAttachmentCount = 1;
+        renderingCreateInfo.pColorAttachmentFormats = &swapchainFormat;
+        pipelineInfo.renderPass = VK_NULL_HANDLE;
+        pipelineInfo.pNext = &renderingCreateInfo;
+    } else {
+        pipelineInfo.renderPass = renderPass;
+        pipelineInfo.subpass = 0;
+    }
 
     auto compileStart = std::chrono::steady_clock::now();
     res = vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &pipeline);
@@ -944,6 +1016,11 @@ bool VulkanRenderer::createDescriptorObjects() {
     if (res != VK_SUCCESS) {
         LOGE("vkCreateSampler (nearest) failed: %d", res);
         return false;
+    }
+
+    if (pushDescriptorSupported) {
+        LOGI("Push descriptors supported: bypassing descriptor pool and set allocation");
+        return true;
     }
 
     VkDescriptorPoolSize poolSize {};
@@ -1103,6 +1180,8 @@ void VulkanRenderer::recomputePushConstants() {
 
     cachedPush.offset[0] = logicalOffsetX * cosTheta - logicalOffsetY * sinTheta;
     cachedPush.offset[1] = logicalOffsetX * sinTheta + logicalOffsetY * cosTheta;
+
+    isLetterboxed = (scaleX < 0.999f || scaleY < 0.999f);
 }
 
 bool VulkanRenderer::renderFrame() {
@@ -1189,34 +1268,37 @@ bool VulkanRenderer::renderFrame() {
     }
 
     const struct retro_vulkan_image* currentImage = VulkanContext::getInstance().getCurrentImage();
+    VkSampler activeSampler = useLinearFiltering ? samplerLinear : samplerNearest;
+    VkImageLayout targetLayout = (currentImage != nullptr && currentImage->image_layout != VK_IMAGE_LAYOUT_UNDEFINED)
+                                 ? currentImage->image_layout
+                                 : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
     if (currentImage != nullptr && currentImage->image_view != VK_NULL_HANDLE) {
-        VkSampler activeSampler = useLinearFiltering ? samplerLinear : samplerNearest;
-        VkImageLayout targetLayout = currentImage->image_layout != VK_IMAGE_LAYOUT_UNDEFINED
-                                     ? currentImage->image_layout
-                                     : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        // Fallback descriptor set update when VK_KHR_push_descriptor is not available
+        if (!pushDescriptorSupported || pfnCmdPushDescriptorSetKHR == nullptr) {
+            if (lastBoundImageView[currentFrame] != currentImage->image_view ||
+                lastBoundSampler[currentFrame] != activeSampler ||
+                lastBoundImageLayout[currentFrame] != targetLayout) {
 
-        if (lastBoundImageView[currentFrame] != currentImage->image_view ||
-            lastBoundSampler[currentFrame] != activeSampler ||
-            lastBoundImageLayout[currentFrame] != targetLayout) {
+                VkDescriptorImageInfo imageInfo {};
+                imageInfo.sampler = activeSampler;
+                imageInfo.imageView = currentImage->image_view;
+                imageInfo.imageLayout = targetLayout;
 
-            VkDescriptorImageInfo imageInfo {};
-            imageInfo.sampler = activeSampler;
-            imageInfo.imageView = currentImage->image_view;
-            imageInfo.imageLayout = targetLayout;
+                VkWriteDescriptorSet write {};
+                write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                write.dstSet = descriptorSets[currentFrame];
+                write.dstBinding = 0;
+                write.descriptorCount = 1;
+                write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                write.pImageInfo = &imageInfo;
 
-            VkWriteDescriptorSet write {};
-            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = descriptorSets[currentFrame];
-            write.dstBinding = 0;
-            write.descriptorCount = 1;
-            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            write.pImageInfo = &imageInfo;
+                vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
 
-            vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-
-            lastBoundImageView[currentFrame] = currentImage->image_view;
-            lastBoundSampler[currentFrame] = activeSampler;
-            lastBoundImageLayout[currentFrame] = targetLayout;
+                lastBoundImageView[currentFrame] = currentImage->image_view;
+                lastBoundSampler[currentFrame] = activeSampler;
+                lastBoundImageLayout[currentFrame] = targetLayout;
+            }
         }
     }
 
@@ -1238,12 +1320,14 @@ bool VulkanRenderer::renderFrame() {
         vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestampQueryPool, currentFrame * 2);
     }
 
-    // Libretro Vulkan spec: if image_layout is UNDEFINED, transition to SHADER_READ_ONLY_OPTIMAL
+    // Libretro Vulkan spec: ensure image layout is transitioned to SHADER_READ_ONLY_OPTIMAL
+    // This activates Qualcomm Adreno UBWC (Universal Bandwidth Compression) hardware decompression
     if (currentImage != nullptr && currentImage->image_view != VK_NULL_HANDLE) {
-        if (currentImage->image_layout == VK_IMAGE_LAYOUT_UNDEFINED && currentImage->create_info.image != VK_NULL_HANDLE) {
+        if (currentImage->create_info.image != VK_NULL_HANDLE &&
+            currentImage->image_layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             VkImageMemoryBarrier barrier {};
             barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            barrier.oldLayout = currentImage->image_layout;
             barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1254,46 +1338,176 @@ bool VulkanRenderer::renderFrame() {
                 barrier.subresourceRange.levelCount = 1;
                 barrier.subresourceRange.layerCount = 1;
             }
-            barrier.srcAccessMask = 0;
+            barrier.srcAccessMask = (currentImage->image_layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+                                    ? VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT : 0;
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
             vkCmdPipelineBarrier(
                 cmd,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                 0,
                 0, nullptr,
                 0, nullptr,
                 1, &barrier
             );
+            targetLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
     }
 
-    VkClearValue clearColor = { {{ 0.0f, 0.0f, 0.0f, 1.0f }} };
-    VkRenderPassBeginInfo rpbi {};
-    rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpbi.renderPass = renderPass;
-    rpbi.framebuffer = swapchainFramebuffers[imageIndex];
-    rpbi.renderArea.offset = { 0, 0 };
-    rpbi.renderArea.extent = swapchainExtent;
-    rpbi.clearValueCount = 1;
-    rpbi.pClearValues = &clearColor;
+    if (dynamicRenderingSupported && pfnCmdBeginRendering != nullptr) {
+        // Modern VK_KHR_dynamic_rendering path: bypasses VkRenderPass and VkFramebuffer allocations
+        VkImageMemoryBarrier attachBarrier {};
+        attachBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        attachBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachBarrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        attachBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        attachBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        attachBarrier.image = swapchainImages[imageIndex];
+        attachBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        attachBarrier.subresourceRange.baseMipLevel = 0;
+        attachBarrier.subresourceRange.levelCount = 1;
+        attachBarrier.subresourceRange.baseArrayLayer = 0;
+        attachBarrier.subresourceRange.layerCount = 1;
+        attachBarrier.srcAccessMask = 0;
+        attachBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
-    vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdPipelineBarrier(
+            cmd,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            0,
+            0, nullptr,
+            0, nullptr,
+            1, &attachBarrier
+        );
 
-    if (currentImage != nullptr && currentImage->image_view != VK_NULL_HANDLE) {
-        VkViewport vp { 0.0f, 0.0f, static_cast<float>(swapchainExtent.width), static_cast<float>(swapchainExtent.height), 0.0f, 1.0f };
-        VkRect2D sc { { 0, 0 }, swapchainExtent };
-        vkCmdSetViewport(cmd, 0, 1, &vp);
-        vkCmdSetScissor(cmd, 0, 1, &sc);
+        VkRenderingAttachmentInfoKHR colorAttachment {};
+        colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+        colorAttachment.imageView = swapchainImageViews[imageIndex];
+        colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        // TBDR optimization: DONT_CARE bypasses clearing on-chip GMEM tile memory on full-bleed quads
+        colorAttachment.loadOp = isLetterboxed ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAttachment.clearValue = { {{ 0.0f, 0.0f, 0.0f, 1.0f }} };
 
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
-        vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &cachedPush);
-        vkCmdDraw(cmd, 6, 1, 0, 0);
+        VkRenderingInfoKHR renderingInfo {};
+        renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
+        renderingInfo.renderArea.offset = { 0, 0 };
+        renderingInfo.renderArea.extent = swapchainExtent;
+        renderingInfo.layerCount = 1;
+        renderingInfo.colorAttachmentCount = 1;
+        renderingInfo.pColorAttachments = &colorAttachment;
+
+        pfnCmdBeginRendering(cmd, &renderingInfo);
+
+        if (currentImage != nullptr && currentImage->image_view != VK_NULL_HANDLE) {
+            VkViewport vp { 0.0f, 0.0f, static_cast<float>(swapchainExtent.width), static_cast<float>(swapchainExtent.height), 0.0f, 1.0f };
+            VkRect2D sc { { 0, 0 }, swapchainExtent };
+            vkCmdSetViewport(cmd, 0, 1, &vp);
+            vkCmdSetScissor(cmd, 0, 1, &sc);
+
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+            if (pushDescriptorSupported && pfnCmdPushDescriptorSetKHR != nullptr) {
+                VkDescriptorImageInfo imageInfo {};
+                imageInfo.sampler = activeSampler;
+                imageInfo.imageView = currentImage->image_view;
+                imageInfo.imageLayout = targetLayout;
+
+                VkWriteDescriptorSet write {};
+                write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                write.dstSet = VK_NULL_HANDLE;
+                write.dstBinding = 0;
+                write.dstArrayElement = 0;
+                write.descriptorCount = 1;
+                write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                write.pImageInfo = &imageInfo;
+
+                pfnCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &write);
+            } else {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
+            }
+
+            vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &cachedPush);
+            vkCmdDraw(cmd, 6, 1, 0, 0);
+        }
+
+        pfnCmdEndRendering(cmd);
+
+        // Transition swapchain image from COLOR_ATTACHMENT_OPTIMAL to PRESENT_SRC_KHR
+        VkImageMemoryBarrier presentBarrier {};
+        presentBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        presentBarrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        presentBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        presentBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        presentBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        presentBarrier.image = swapchainImages[imageIndex];
+        presentBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        presentBarrier.subresourceRange.baseMipLevel = 0;
+        presentBarrier.subresourceRange.levelCount = 1;
+        presentBarrier.subresourceRange.baseArrayLayer = 0;
+        presentBarrier.subresourceRange.layerCount = 1;
+        presentBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        presentBarrier.dstAccessMask = 0;
+
+        vkCmdPipelineBarrier(
+            cmd,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+            0,
+            0, nullptr,
+            0, nullptr,
+            1, &presentBarrier
+        );
+    } else {
+        // Fallback VkRenderPassBeginInfo path
+        VkClearValue clearColor = { {{ 0.0f, 0.0f, 0.0f, 1.0f }} };
+        VkRenderPassBeginInfo rpbi {};
+        rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rpbi.renderPass = renderPass;
+        rpbi.framebuffer = swapchainFramebuffers[imageIndex];
+        rpbi.renderArea.offset = { 0, 0 };
+        rpbi.renderArea.extent = swapchainExtent;
+        rpbi.clearValueCount = 1;
+        rpbi.pClearValues = &clearColor;
+
+        vkCmdBeginRenderPass(cmd, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+
+        if (currentImage != nullptr && currentImage->image_view != VK_NULL_HANDLE) {
+            VkViewport vp { 0.0f, 0.0f, static_cast<float>(swapchainExtent.width), static_cast<float>(swapchainExtent.height), 0.0f, 1.0f };
+            VkRect2D sc { { 0, 0 }, swapchainExtent };
+            vkCmdSetViewport(cmd, 0, 1, &vp);
+            vkCmdSetScissor(cmd, 0, 1, &sc);
+
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+            if (pushDescriptorSupported && pfnCmdPushDescriptorSetKHR != nullptr) {
+                VkDescriptorImageInfo imageInfo {};
+                imageInfo.sampler = activeSampler;
+                imageInfo.imageView = currentImage->image_view;
+                imageInfo.imageLayout = targetLayout;
+
+                VkWriteDescriptorSet write {};
+                write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                write.dstSet = VK_NULL_HANDLE;
+                write.dstBinding = 0;
+                write.dstArrayElement = 0;
+                write.descriptorCount = 1;
+                write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                write.pImageInfo = &imageInfo;
+
+                pfnCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &write);
+            } else {
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
+            }
+
+            vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PushConstants), &cachedPush);
+            vkCmdDraw(cmd, 6, 1, 0, 0);
+        }
+
+        vkCmdEndRenderPass(cmd);
     }
-
-    vkCmdEndRenderPass(cmd);
 
     if (timestampsSupported && timestampQueryPool != VK_NULL_HANDLE) {
         vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestampQueryPool, currentFrame * 2 + 1);
@@ -1342,48 +1556,112 @@ bool VulkanRenderer::renderFrame() {
     }
     allCmdBuffers[cmdCount++] = cmd;
 
-    VkSubmitInfo si {};
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.waitSemaphoreCount = waitCount;
-    si.pWaitSemaphores = waitSems;
-    si.pWaitDstStageMask = waitStages;
-    si.commandBufferCount = cmdCount;
-    si.pCommandBuffers = allCmdBuffers;
-    si.signalSemaphoreCount = signalCount;
-    si.pSignalSemaphores = signalSems;
-
     VkFence currentSyncFence = VulkanContext::getInstance().getCurrentSyncFence();
     VkQueue queue = VulkanContext::getInstance().getQueue();
 
-    {
-        std::lock_guard<std::mutex> lock(VulkanContext::getInstance().getQueueMutex());
-        VulkanContext::getInstance().resetSyncFence();
-        res = vkQueueSubmit(queue, 1, &si, currentSyncFence);
-        if (res != VK_SUCCESS) {
-            // Present would queue a buffer whose wait semaphore never signaled.
-            // Android crashes in Surface::queueBuffer on that path.
-            LOGE("vkQueueSubmit failed: %d", res);
-            if (res == VK_ERROR_DEVICE_LOST) {
-                LOGE("CRITICAL: Vulkan Device Lost (VK_ERROR_DEVICE_LOST) in vkQueueSubmit");
-            } else if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY || res == VK_ERROR_OUT_OF_HOST_MEMORY) {
-                LOGE("CRITICAL: Vulkan Out of Memory (%d) in vkQueueSubmit", res);
-                VulkanContext::getInstance().logMemoryBudget();
-            } else {
-                needsRecreate = true;
-                vkQueueWaitIdle(queue);
-                if (imageAvailableSemaphores[currentFrame] != VK_NULL_HANDLE) {
-                    vkDestroySemaphore(device, imageAvailableSemaphores[currentFrame], nullptr);
-                    imageAvailableSemaphores[currentFrame] = VK_NULL_HANDLE;
-                }
-                VkSemaphoreCreateInfo replacement {};
-                replacement.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-                vkCreateSemaphore(device, &replacement, nullptr, &imageAvailableSemaphores[currentFrame]);
-            }
-            return false;
+    if (synchronization2Supported && pfnQueueSubmit2 != nullptr) {
+        VkSemaphoreSubmitInfoKHR waitInfos[MAX_SUBMIT_SEMAPHORES];
+        for (uint32_t i = 0; i < waitCount; ++i) {
+            waitInfos[i].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR;
+            waitInfos[i].pNext = nullptr;
+            waitInfos[i].semaphore = waitSems[i];
+            waitInfos[i].value = 0;
+            waitInfos[i].stageMask = (i == 0) ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR : VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR;
+            waitInfos[i].deviceIndex = 0;
         }
-        VulkanContext::getInstance().setCurrentFenceInFlight();
+
+        VkSemaphoreSubmitInfoKHR signalInfos[MAX_SUBMIT_SEMAPHORES];
+        for (uint32_t i = 0; i < signalCount; ++i) {
+            signalInfos[i].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO_KHR;
+            signalInfos[i].pNext = nullptr;
+            signalInfos[i].semaphore = signalSems[i];
+            signalInfos[i].value = 0;
+            signalInfos[i].stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT_KHR;
+            signalInfos[i].deviceIndex = 0;
+        }
+
+        VkCommandBufferSubmitInfoKHR cmdInfos[MAX_SUBMIT_CMD_BUFFERS];
+        for (uint32_t i = 0; i < cmdCount; ++i) {
+            cmdInfos[i].sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO_KHR;
+            cmdInfos[i].pNext = nullptr;
+            cmdInfos[i].commandBuffer = allCmdBuffers[i];
+            cmdInfos[i].deviceMask = 0;
+        }
+
+        VkSubmitInfo2KHR si2 {};
+        si2.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2_KHR;
+        si2.waitSemaphoreInfoCount = waitCount;
+        si2.pWaitSemaphoreInfos = waitInfos;
+        si2.commandBufferInfoCount = cmdCount;
+        si2.pCommandBufferInfos = cmdInfos;
+        si2.signalSemaphoreInfoCount = signalCount;
+        si2.pSignalSemaphoreInfos = signalInfos;
+
+        {
+            std::lock_guard<std::mutex> lock(VulkanContext::getInstance().getQueueMutex());
+            VulkanContext::getInstance().resetSyncFence();
+            res = pfnQueueSubmit2(queue, 1, &si2, currentSyncFence);
+            if (res != VK_SUCCESS) {
+                LOGE("vkQueueSubmit2KHR failed: %d", res);
+                if (res == VK_ERROR_DEVICE_LOST) {
+                    LOGE("CRITICAL: Vulkan Device Lost (VK_ERROR_DEVICE_LOST) in vkQueueSubmit2KHR");
+                } else if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY || res == VK_ERROR_OUT_OF_HOST_MEMORY) {
+                    LOGE("CRITICAL: Vulkan Out of Memory (%d) in vkQueueSubmit2KHR", res);
+                    VulkanContext::getInstance().logMemoryBudget();
+                } else {
+                    needsRecreate = true;
+                    vkQueueWaitIdle(queue);
+                    if (imageAvailableSemaphores[currentFrame] != VK_NULL_HANDLE) {
+                        vkDestroySemaphore(device, imageAvailableSemaphores[currentFrame], nullptr);
+                        imageAvailableSemaphores[currentFrame] = VK_NULL_HANDLE;
+                    }
+                    VkSemaphoreCreateInfo replacement {};
+                    replacement.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+                    vkCreateSemaphore(device, &replacement, nullptr, &imageAvailableSemaphores[currentFrame]);
+                }
+                return false;
+            }
+            VulkanContext::getInstance().setCurrentFenceInFlight();
+        }
+    } else {
+        VkSubmitInfo si {};
+        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.waitSemaphoreCount = waitCount;
+        si.pWaitSemaphores = waitSems;
+        si.pWaitDstStageMask = waitStages;
+        si.commandBufferCount = cmdCount;
+        si.pCommandBuffers = allCmdBuffers;
+        si.signalSemaphoreCount = signalCount;
+        si.pSignalSemaphores = signalSems;
+
+        {
+            std::lock_guard<std::mutex> lock(VulkanContext::getInstance().getQueueMutex());
+            VulkanContext::getInstance().resetSyncFence();
+            res = vkQueueSubmit(queue, 1, &si, currentSyncFence);
+            if (res != VK_SUCCESS) {
+                LOGE("vkQueueSubmit failed: %d", res);
+                if (res == VK_ERROR_DEVICE_LOST) {
+                    LOGE("CRITICAL: Vulkan Device Lost (VK_ERROR_DEVICE_LOST) in vkQueueSubmit");
+                } else if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY || res == VK_ERROR_OUT_OF_HOST_MEMORY) {
+                    LOGE("CRITICAL: Vulkan Out of Memory (%d) in vkQueueSubmit", res);
+                    VulkanContext::getInstance().logMemoryBudget();
+                } else {
+                    needsRecreate = true;
+                    vkQueueWaitIdle(queue);
+                    if (imageAvailableSemaphores[currentFrame] != VK_NULL_HANDLE) {
+                        vkDestroySemaphore(device, imageAvailableSemaphores[currentFrame], nullptr);
+                        imageAvailableSemaphores[currentFrame] = VK_NULL_HANDLE;
+                    }
+                    VkSemaphoreCreateInfo replacement {};
+                    replacement.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+                    vkCreateSemaphore(device, &replacement, nullptr, &imageAvailableSemaphores[currentFrame]);
+                }
+                return false;
+            }
+            VulkanContext::getInstance().setCurrentFenceInFlight();
+        }
     }
-    // queueMutex is released here! Core threads (e.g. Dolphin worker threads) can submit immediately.
+    // queueMutex is released here! Core threads (e.g. Dolphin/Aether/Cemu MTGS worker threads) can submit immediately.
 
     VkPresentInfoKHR pi {};
     pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -1398,14 +1676,12 @@ bool VulkanRenderer::renderFrame() {
         presentQueue = queue;
     }
 
-    if (presentQueue == queue) {
-        // Protect shared queue against concurrent calls during the vkQueuePresentKHR invocation itself
-        std::lock_guard<std::mutex> lock(VulkanContext::getInstance().getQueueMutex());
-        res = vkQueuePresentKHR(presentQueue, &pi);
-    } else {
-        // Separate presentation queue needs no lock on core queue
-        res = vkQueuePresentKHR(presentQueue, &pi);
-    }
+    // Present the swapchain image to the display.
+    // Note: queueMutex is intentionally NOT locked during vkQueuePresentKHR.
+    // On Android, vkQueuePresentKHR interacts with SurfaceFlinger / BufferQueue and can block
+    // waiting for VSYNC in FIFO mode. Holding queueMutex here would freeze core rendering threads
+    // (such as PS2 MTGS or Cemu Latte) from calling vkQueueSubmit for up to 16.6ms.
+    res = vkQueuePresentKHR(presentQueue, &pi);
 
     if (suboptimal || res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR || res == VK_ERROR_SURFACE_LOST_KHR) {
         needsRecreate = true;
@@ -1476,6 +1752,86 @@ void VulkanRenderer::cleanupTimestampQueries() {
     }
     lastGpuTimeMs = -1.0;
     timestampsSupported = false;
+}
+
+void VulkanRenderer::setAsyncPresentation(bool enabled) {
+    if (asyncPresentation == enabled) return;
+    flushAsync();
+    asyncPresentation = enabled;
+}
+
+void VulkanRenderer::startAsyncWorker() {
+    if (asyncWorkerRunning) return;
+    asyncWorkerRunning = true;
+    asyncFramePending = false;
+    asyncFrameInFlight = false;
+    asyncWorkerThread = std::thread(&VulkanRenderer::asyncWorkerLoop, this);
+}
+
+void VulkanRenderer::stopAsyncWorker() {
+    if (!asyncWorkerRunning) return;
+    {
+        std::lock_guard<std::mutex> lock(asyncMutex);
+        asyncWorkerRunning = false;
+        asyncFramePending = false;
+        asyncCv.notify_all();
+    }
+    if (asyncWorkerThread.joinable()) {
+        asyncWorkerThread.join();
+    }
+}
+
+void VulkanRenderer::asyncWorkerLoop() {
+    pthread_setname_np(pthread_self(), "VulkanPresent");
+    ADPFManager::getInstance().registerThread(gettid());
+
+    while (asyncWorkerRunning) {
+        {
+            std::unique_lock<std::mutex> lock(asyncMutex);
+            asyncCv.wait(lock, [this]() {
+                return !asyncWorkerRunning || asyncFramePending.load();
+            });
+            if (!asyncWorkerRunning) break;
+            asyncFramePending = false;
+            asyncFrameInFlight = true;
+        }
+
+        renderFrame();
+
+        {
+            std::lock_guard<std::mutex> lock(asyncMutex);
+            asyncFrameInFlight = false;
+            asyncDoneCv.notify_all();
+        }
+    }
+
+    ADPFManager::getInstance().unregisterThread(gettid());
+}
+
+void VulkanRenderer::requestRenderAsync() {
+    if (!asyncPresentation || !asyncWorkerRunning) {
+        renderFrame();
+        return;
+    }
+
+    {
+        std::unique_lock<std::mutex> lock(asyncMutex);
+        // Wait for prior frame presentation to finish so we do not overwrite or race on per-frame buffers
+        asyncDoneCv.wait(lock, [this]() {
+            return !asyncFrameInFlight.load() && !asyncFramePending.load();
+        });
+
+        asyncFramePending = true;
+        asyncCv.notify_one();
+    }
+}
+
+void VulkanRenderer::flushAsync() {
+    if (!asyncWorkerRunning) return;
+    std::unique_lock<std::mutex> lock(asyncMutex);
+    asyncDoneCv.wait(lock, [this]() {
+        return !asyncFrameInFlight.load() && !asyncFramePending.load();
+    });
 }
 
 } // namespace libretrodroid

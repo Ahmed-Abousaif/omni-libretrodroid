@@ -130,6 +130,8 @@ public:
 
     void setRumbleEnabled(bool enabled);
     void setNonBlockingVulkanPresent(bool enabled);
+    void setAsyncVulkanPresentation(bool enabled);
+    bool isAsyncVulkanPresentation() const;
     bool isRumbleEnabled() const;
     void handleRumbleUpdates(const std::function<void(int, float, float)> &handler);
 
@@ -185,6 +187,7 @@ private:
     bool skipDuplicateFrames = false;
     bool allowFrameCatchUp = true;
     bool nonBlockingVulkanPresent = false;
+    bool asyncVulkanPresentation = true;
     bool immersiveModeEnabled = false;
     ImmersiveMode::Config immersiveModeConfig {};
 

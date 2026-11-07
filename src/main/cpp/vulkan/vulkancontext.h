@@ -106,6 +106,11 @@ public:
     bool isMemoryBudgetSupported() const { return memoryBudgetSupported; }
     bool isUnifiedMemory() const { return isUma; }
 
+    bool isPushDescriptorSupported() const { return pushDescriptorSupported; }
+    bool isDynamicRenderingSupported() const { return dynamicRenderingSupported; }
+    bool isSynchronization2Supported() const { return synchronization2Supported; }
+    bool isSwapchainMaintenance1Supported() const { return swapchainMaintenance1Supported; }
+
     static constexpr uint32_t MAX_SYNC_INDEX = 3;
 
 private:
@@ -144,6 +149,10 @@ private:
     bool memoryBudgetSupported = false;
     bool isUma = false;
     bool newFrameAvailable = false;
+    bool pushDescriptorSupported = false;
+    bool dynamicRenderingSupported = false;
+    bool synchronization2Supported = false;
+    bool swapchainMaintenance1Supported = false;
 
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     ANativeWindow* nativeWindow = nullptr;

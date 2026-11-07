@@ -34,7 +34,8 @@ class GLRetroViewData(context: Context) {
     var preferLowLatencyAudio: Boolean = true
     var skipDuplicateFrames: Boolean = false
     var allowFrameCatchUp: Boolean = true
-    var nonBlockingVulkanPresent: Boolean = false
+    var nonBlockingVulkanPresent: Boolean = true
+    var asyncVulkanPresentation: Boolean = true
     var enableMicrophone: Boolean = false
     var immersiveMode: ImmersiveMode? = null
 }

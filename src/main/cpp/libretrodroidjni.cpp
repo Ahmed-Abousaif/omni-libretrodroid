@@ -609,6 +609,21 @@ JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_setNonBloc
     LibretroDroid::getInstance().setNonBlockingVulkanPresent(enabled);
 }
 
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_setAsyncVulkanPresentation(
+    JNIEnv* env,
+    jclass obj,
+    jboolean enabled
+) {
+    LibretroDroid::getInstance().setAsyncVulkanPresentation(enabled);
+}
+
+JNIEXPORT jboolean JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_isAsyncVulkanPresentation(
+    JNIEnv* env,
+    jclass obj
+) {
+    return LibretroDroid::getInstance().isAsyncVulkanPresentation();
+}
+
 JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_setFrameSpeed(
     JNIEnv* env,
     jclass obj,

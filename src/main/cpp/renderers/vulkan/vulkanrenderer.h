@@ -44,6 +44,10 @@ public:
 
     bool isReady() const { return initialized && swapchain != VK_NULL_HANDLE; }
 
+    bool isDirty() const { return isDirtyFlag; }
+    void markDirty() { isDirtyFlag = true; }
+    void clearDirty() { isDirtyFlag = false; }
+
 private:
     bool initPipelineCache();
     void destroyPipelineCache();
@@ -113,6 +117,7 @@ private:
 
     PushConstants cachedPush {};
     bool pushConstantsDirty = true;
+    bool isDirtyFlag = true;
     uint32_t currentFrame = 0;
     bool allowMailbox = false;
     bool usingMailbox = false;

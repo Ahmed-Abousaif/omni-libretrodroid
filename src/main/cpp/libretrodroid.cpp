@@ -613,9 +613,14 @@ void LibretroDroid::step() {
 
     double gpuTimeMs = -1.0;
     if (vulkanRenderer) {
-        vulkanRenderer->renderFrame();
-        if (profiling) {
-            gpuTimeMs = vulkanRenderer->getLastGpuTimeMs();
+        const bool hasNewCoreFrame = VulkanContext::getInstance().hasNewFrame();
+        const bool isRendererDirty = vulkanRenderer->isDirty();
+        if (!skipDuplicateFrames || hasNewCoreFrame || isRendererDirty) {
+            vulkanRenderer->renderFrame();
+            VulkanContext::getInstance().consumeNewFrame();
+            if (profiling) {
+                gpuTimeMs = vulkanRenderer->getLastGpuTimeMs();
+            }
         }
     } else if (video && !video->rendersInVideoCallback()) {
         video->renderFrame();
@@ -739,6 +744,9 @@ void LibretroDroid::handleVideoRefresh(
     unsigned int height,
     size_t pitch
 ) {
+    if (vulkanRenderer && data != nullptr) {
+        VulkanContext::getInstance().markNewFrame();
+    }
     if (video) {
         video->onNewFrame(data, width, height, pitch);
 

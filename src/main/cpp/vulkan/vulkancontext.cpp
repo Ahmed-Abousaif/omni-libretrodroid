@@ -11,6 +11,34 @@
 #define VK_EXT_MEMORY_BUDGET_EXTENSION_NAME "VK_EXT_memory_budget"
 #endif
 
+#ifndef VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME
+#define VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME "VK_KHR_dynamic_rendering"
+#endif
+
+#ifndef VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME
+#define VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME "VK_KHR_synchronization2"
+#endif
+
+#ifndef VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME
+#define VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME "VK_EXT_descriptor_indexing"
+#endif
+
+#ifndef VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME
+#define VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME "VK_EXT_custom_border_color"
+#endif
+
+#ifndef VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME
+#define VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME "VK_EXT_provoking_vertex"
+#endif
+
+#ifndef VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME
+#define VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME "VK_EXT_rasterization_order_attachment_access"
+#endif
+
+#ifndef VK_ARM_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME
+#define VK_ARM_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME "VK_ARM_rasterization_order_attachment_access"
+#endif
+
 #ifndef VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT
 #define VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT static_cast<VkStructureType>(1000237000)
 #endif
@@ -90,7 +118,10 @@ void VulkanContext::deinitialize() {
 
     gpu = VK_NULL_HANDLE;
     queue = VK_NULL_HANDLE;
+    presentationQueue = VK_NULL_HANDLE;
     queueFamilyIndex = 0;
+    presentationQueueFamilyIndex = 0;
+    maxQueueCount = 1;
     initialized = false;
     coreCreatedDevice = false;
     negotiationInterface.reset();
@@ -99,6 +130,7 @@ void VulkanContext::deinitialize() {
     contextResetCalled = false;
     currentImage = nullptr;
     hasLastImage = false;
+    newFrameAvailable = false;
     waitSemaphores.clear();
     coreCommandBuffers.clear();
     signalSemaphore = VK_NULL_HANDLE;
@@ -415,8 +447,9 @@ bool VulkanContext::selectPhysicalDevice() {
             if (hasGraphics && hasCompute && presentSupported) {
                 gpu = candidate;
                 queueFamilyIndex = q;
-                LOGI("Selected Vulkan GPU: %s (type %d), queue family %u (graphics+compute+present)",
-                     props.deviceName, (int)props.deviceType, q);
+                maxQueueCount = queueProps[q].queueCount;
+                LOGI("Selected Vulkan GPU: %s (type %d), queue family %u (graphics+compute+present, queueCount=%u)",
+                     props.deviceName, (int)props.deviceType, q, maxQueueCount);
                 logMemoryProperties();
                 return true;
             }
@@ -444,7 +477,8 @@ bool VulkanContext::selectPhysicalDevice() {
                 if (presentSupported) {
                     gpu = candidate;
                     queueFamilyIndex = q;
-                    LOGI("Selected fallback Vulkan GPU: %s, queue family %u", props.deviceName, q);
+                    maxQueueCount = queueProps[q].queueCount;
+                    LOGI("Selected fallback Vulkan GPU: %s, queue family %u (queueCount=%u)", props.deviceName, q, maxQueueCount);
                     logMemoryProperties();
                     return true;
                 }
@@ -612,24 +646,253 @@ bool VulkanContext::createDevice() {
     }
 
     if (device == VK_NULL_HANDLE) {
-        LOGI("Creating device directly in frontend");
-        float priority = 1.0f;
+        LOGI("Creating device directly in frontend with modern features & multi-queue support");
+
+        // 1. Queue configuration: allocate separate presentation queue if family supports >= 2 queues
+        uint32_t requestedQueueCount = (maxQueueCount >= 2) ? 2 : 1;
+        float queuePriorities[2] = { 1.0f, 1.0f };
         VkDeviceQueueCreateInfo qci {};
         qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         qci.queueFamilyIndex = queueFamilyIndex;
-        qci.queueCount = 1;
-        qci.pQueuePriorities = &priority;
+        qci.queueCount = requestedQueueCount;
+        qci.pQueuePriorities = queuePriorities;
+
+        // 2. Discover available device extensions
+        uint32_t devExtCount = 0;
+        vkEnumerateDeviceExtensionProperties(gpu, nullptr, &devExtCount, nullptr);
+        std::vector<VkExtensionProperties> availableDevExts(devExtCount);
+        if (devExtCount > 0) {
+            vkEnumerateDeviceExtensionProperties(gpu, nullptr, &devExtCount, availableDevExts.data());
+        }
+        auto isExtSupported = [&](const char* name) -> bool {
+            for (const auto& ext : availableDevExts) {
+                if (strcmp(ext.extensionName, name) == 0) return true;
+            }
+            return false;
+        };
 
         std::vector<const char*> devExts = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+        auto addExtIfSupported = [&](const char* name) {
+            if (isExtSupported(name)) {
+                for (const auto& existing : devExts) {
+                    if (strcmp(existing, name) == 0) return;
+                }
+                devExts.push_back(name);
+                LOGI("Vulkan device extension enabled: %s", name);
+            }
+        };
+
         if (memoryBudgetSupported) {
-            devExts.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+            addExtIfSupported(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
         }
+        addExtIfSupported(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+        addExtIfSupported(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+        addExtIfSupported("VK_KHR_create_renderpass2");
+        addExtIfSupported("VK_KHR_separate_depth_stencil_layouts");
+        addExtIfSupported("VK_KHR_timeline_semaphore");
+        addExtIfSupported("VK_KHR_shader_float16_int8");
+        addExtIfSupported("VK_KHR_16bit_storage");
+        addExtIfSupported(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);
+        addExtIfSupported(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
+        addExtIfSupported(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
+        addExtIfSupported("VK_EXT_line_rasterization");
+        // Mobile TBDR rasterization order attachment access (Qualcomm Adreno & ARM Mali)
+        addExtIfSupported(VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME);
+        addExtIfSupported(VK_ARM_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME);
+
+        // 3. Query base Vulkan 1.0 features
+        VkPhysicalDeviceFeatures supportedFeatures {};
+        vkGetPhysicalDeviceFeatures(gpu, &supportedFeatures);
+
+        VkPhysicalDeviceFeatures enabledFeatures {};
+        // PS2 GS & Wii U Latte: dual source blending for alpha test/blend
+        enabledFeatures.dualSrcBlend = supportedFeatures.dualSrcBlend;
+        // Wii U: native geometry and tessellation shaders
+        enabledFeatures.geometryShader = supportedFeatures.geometryShader;
+        enabledFeatures.tessellationShader = supportedFeatures.tessellationShader;
+        // Wii U & 3DS: depth clamping without clipping emulation
+        enabledFeatures.depthClamp = supportedFeatures.depthClamp;
+        enabledFeatures.depthBiasClamp = supportedFeatures.depthBiasClamp;
+        // High quality filtering & dynamic indexing
+        enabledFeatures.samplerAnisotropy = supportedFeatures.samplerAnisotropy;
+        enabledFeatures.independentBlend = supportedFeatures.independentBlend;
+        enabledFeatures.multiDrawIndirect = supportedFeatures.multiDrawIndirect;
+        enabledFeatures.sampleRateShading = supportedFeatures.sampleRateShading;
+        enabledFeatures.fillModeNonSolid = supportedFeatures.fillModeNonSolid;
+        enabledFeatures.fragmentStoresAndAtomics = supportedFeatures.fragmentStoresAndAtomics;
+        enabledFeatures.shaderStorageImageExtendedFormats = supportedFeatures.shaderStorageImageExtendedFormats;
+        enabledFeatures.shaderSampledImageArrayDynamicIndexing = supportedFeatures.shaderSampledImageArrayDynamicIndexing;
+        enabledFeatures.shaderStorageBufferArrayDynamicIndexing = supportedFeatures.shaderStorageBufferArrayDynamicIndexing;
+        enabledFeatures.shaderClipDistance = supportedFeatures.shaderClipDistance;
+        enabledFeatures.shaderCullDistance = supportedFeatures.shaderCullDistance;
+
+        LOGI("Vulkan 1.0 features: dualSrcBlend=%d, geomShader=%d, tessShader=%d, depthClamp=%d, anisotropy=%d, indepBlend=%d, multiDraw=%d",
+             enabledFeatures.dualSrcBlend,
+             enabledFeatures.geometryShader,
+             enabledFeatures.tessellationShader,
+             enabledFeatures.depthClamp,
+             enabledFeatures.samplerAnisotropy,
+             enabledFeatures.independentBlend,
+             enabledFeatures.multiDrawIndirect);
+
+        // 4. Query and chain Vulkan 1.1 / 1.2 / 1.3 / Extension features
+        VkPhysicalDeviceProperties gpuProps {};
+        vkGetPhysicalDeviceProperties(gpu, &gpuProps);
+        uint32_t deviceApiVersion = gpuProps.apiVersion;
+
+        auto pfnGetPhysicalDeviceFeatures2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+            vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2")
+        );
+        if (pfnGetPhysicalDeviceFeatures2 == nullptr) {
+            pfnGetPhysicalDeviceFeatures2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+                vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2KHR")
+            );
+        }
+
+        VkPhysicalDeviceFeatures2 supportedFeatures2 {};
+        supportedFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+
+        VkPhysicalDeviceVulkan11Features supportedVk11Features {};
+        supportedVk11Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+
+        VkPhysicalDeviceVulkan12Features supportedVk12Features {};
+        supportedVk12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+
+        VkPhysicalDeviceVulkan13Features supportedVk13Features {};
+        supportedVk13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+
+        VkPhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT supportedRasterOrderFeatures {};
+        supportedRasterOrderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_FEATURES_EXT;
+
+        VkPhysicalDeviceProvokingVertexFeaturesEXT supportedProvokingVertexFeatures {};
+        supportedProvokingVertexFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT;
+
+        VkPhysicalDeviceCustomBorderColorFeaturesEXT supportedBorderColorFeatures {};
+        supportedBorderColorFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT;
+
+        if (pfnGetPhysicalDeviceFeatures2 != nullptr) {
+            void** ppNext = &supportedFeatures2.pNext;
+            if (deviceApiVersion >= VK_API_VERSION_1_1) {
+                *ppNext = &supportedVk11Features;
+                ppNext = &supportedVk11Features.pNext;
+            }
+            if (deviceApiVersion >= VK_API_VERSION_1_2) {
+                *ppNext = &supportedVk12Features;
+                ppNext = &supportedVk12Features.pNext;
+            }
+            if (deviceApiVersion >= VK_API_VERSION_1_3) {
+                *ppNext = &supportedVk13Features;
+                ppNext = &supportedVk13Features.pNext;
+            }
+            if (isExtSupported(VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME) ||
+                isExtSupported(VK_ARM_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME)) {
+                *ppNext = &supportedRasterOrderFeatures;
+                ppNext = &supportedRasterOrderFeatures.pNext;
+            }
+            if (isExtSupported(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME)) {
+                *ppNext = &supportedProvokingVertexFeatures;
+                ppNext = &supportedProvokingVertexFeatures.pNext;
+            }
+            if (isExtSupported(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME)) {
+                *ppNext = &supportedBorderColorFeatures;
+                ppNext = &supportedBorderColorFeatures.pNext;
+            }
+            pfnGetPhysicalDeviceFeatures2(gpu, &supportedFeatures2);
+        }
+
+        VkPhysicalDeviceFeatures2 enabledFeatures2 {};
+        enabledFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        enabledFeatures2.features = enabledFeatures;
+
+        VkPhysicalDeviceVulkan11Features enabledVk11Features {};
+        VkPhysicalDeviceVulkan12Features enabledVk12Features {};
+        VkPhysicalDeviceVulkan13Features enabledVk13Features {};
+        VkPhysicalDeviceRasterizationOrderAttachmentAccessFeaturesEXT enabledRasterOrderFeatures {};
+        VkPhysicalDeviceProvokingVertexFeaturesEXT enabledProvokingVertexFeatures {};
+        VkPhysicalDeviceCustomBorderColorFeaturesEXT enabledBorderColorFeatures {};
+
+        if (pfnGetPhysicalDeviceFeatures2 != nullptr) {
+            void** ppEnabledNext = &enabledFeatures2.pNext;
+            if (deviceApiVersion >= VK_API_VERSION_1_1) {
+                enabledVk11Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+                enabledVk11Features.shaderDrawParameters = supportedVk11Features.shaderDrawParameters;
+                enabledVk11Features.storageBuffer16BitAccess = supportedVk11Features.storageBuffer16BitAccess;
+                enabledVk11Features.uniformAndStorageBuffer16BitAccess = supportedVk11Features.uniformAndStorageBuffer16BitAccess;
+                *ppEnabledNext = &enabledVk11Features;
+                ppEnabledNext = &enabledVk11Features.pNext;
+                LOGI("Vulkan 1.1 features enabled: shaderDrawParameters=%d, 16bitStorage=%d",
+                     enabledVk11Features.shaderDrawParameters, enabledVk11Features.storageBuffer16BitAccess);
+            }
+            if (deviceApiVersion >= VK_API_VERSION_1_2) {
+                enabledVk12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+                enabledVk12Features.descriptorIndexing = supportedVk12Features.descriptorIndexing;
+                enabledVk12Features.shaderSampledImageArrayNonUniformIndexing = supportedVk12Features.shaderSampledImageArrayNonUniformIndexing;
+                enabledVk12Features.descriptorBindingVariableDescriptorCount = supportedVk12Features.descriptorBindingVariableDescriptorCount;
+                enabledVk12Features.runtimeDescriptorArray = supportedVk12Features.runtimeDescriptorArray;
+                enabledVk12Features.descriptorBindingPartiallyBound = supportedVk12Features.descriptorBindingPartiallyBound;
+                enabledVk12Features.shaderFloat16 = supportedVk12Features.shaderFloat16;
+                enabledVk12Features.shaderInt8 = supportedVk12Features.shaderInt8;
+                enabledVk12Features.samplerFilterMinmax = supportedVk12Features.samplerFilterMinmax;
+                enabledVk12Features.hostQueryReset = supportedVk12Features.hostQueryReset;
+                enabledVk12Features.timelineSemaphore = supportedVk12Features.timelineSemaphore;
+                *ppEnabledNext = &enabledVk12Features;
+                ppEnabledNext = &enabledVk12Features.pNext;
+                LOGI("Vulkan 1.2 features enabled: descriptorIndexing=%d, shaderFloat16=%d, hostQueryReset=%d, timelineSem=%d",
+                     enabledVk12Features.descriptorIndexing, enabledVk12Features.shaderFloat16,
+                     enabledVk12Features.hostQueryReset, enabledVk12Features.timelineSemaphore);
+            }
+            if (deviceApiVersion >= VK_API_VERSION_1_3) {
+                enabledVk13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+                enabledVk13Features.dynamicRendering = supportedVk13Features.dynamicRendering;
+                enabledVk13Features.synchronization2 = supportedVk13Features.synchronization2;
+                *ppEnabledNext = &enabledVk13Features;
+                ppEnabledNext = &enabledVk13Features.pNext;
+                LOGI("Vulkan 1.3 features enabled: dynamicRendering=%d, synchronization2=%d",
+                     enabledVk13Features.dynamicRendering, enabledVk13Features.synchronization2);
+            }
+            if (isExtSupported(VK_EXT_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME) ||
+                isExtSupported(VK_ARM_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_EXTENSION_NAME)) {
+                enabledRasterOrderFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_FEATURES_EXT;
+                enabledRasterOrderFeatures.rasterizationOrderColorAttachmentAccess = supportedRasterOrderFeatures.rasterizationOrderColorAttachmentAccess;
+                enabledRasterOrderFeatures.rasterizationOrderDepthAttachmentAccess = supportedRasterOrderFeatures.rasterizationOrderDepthAttachmentAccess;
+                enabledRasterOrderFeatures.rasterizationOrderStencilAttachmentAccess = supportedRasterOrderFeatures.rasterizationOrderStencilAttachmentAccess;
+                *ppEnabledNext = &enabledRasterOrderFeatures;
+                ppEnabledNext = &enabledRasterOrderFeatures.pNext;
+                LOGI("TBDR Rasterization Order Attachment Access enabled: color=%d, depth=%d",
+                     enabledRasterOrderFeatures.rasterizationOrderColorAttachmentAccess,
+                     enabledRasterOrderFeatures.rasterizationOrderDepthAttachmentAccess);
+            }
+            if (isExtSupported(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME)) {
+                enabledProvokingVertexFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROVOKING_VERTEX_FEATURES_EXT;
+                enabledProvokingVertexFeatures.provokingVertexLast = supportedProvokingVertexFeatures.provokingVertexLast;
+                enabledProvokingVertexFeatures.transformFeedbackPreservesProvokingVertex = supportedProvokingVertexFeatures.transformFeedbackPreservesProvokingVertex;
+                *ppEnabledNext = &enabledProvokingVertexFeatures;
+                ppEnabledNext = &enabledProvokingVertexFeatures.pNext;
+                LOGI("Provoking Vertex feature enabled: %d", enabledProvokingVertexFeatures.provokingVertexLast);
+            }
+            if (isExtSupported(VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME)) {
+                enabledBorderColorFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT;
+                enabledBorderColorFeatures.customBorderColors = supportedBorderColorFeatures.customBorderColors;
+                enabledBorderColorFeatures.customBorderColorWithoutFormat = supportedBorderColorFeatures.customBorderColorWithoutFormat;
+                *ppEnabledNext = &enabledBorderColorFeatures;
+                ppEnabledNext = &enabledBorderColorFeatures.pNext;
+                LOGI("Custom Border Color feature enabled: %d", enabledBorderColorFeatures.customBorderColors);
+            }
+        }
+
         VkDeviceCreateInfo dci {};
         dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         dci.queueCreateInfoCount = 1;
         dci.pQueueCreateInfos = &qci;
         dci.enabledExtensionCount = static_cast<uint32_t>(devExts.size());
         dci.ppEnabledExtensionNames = devExts.data();
+        if (pfnGetPhysicalDeviceFeatures2 != nullptr) {
+            dci.pNext = &enabledFeatures2;
+            dci.pEnabledFeatures = nullptr;
+        } else {
+            dci.pNext = nullptr;
+            dci.pEnabledFeatures = &enabledFeatures;
+        }
 
         VkResult res = vkCreateDevice(gpu, &dci, nullptr, &device);
         if (res != VK_SUCCESS) {
@@ -638,10 +901,16 @@ bool VulkanContext::createDevice() {
         }
 
         vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
-        presentationQueue = queue;
-        presentationQueueFamilyIndex = queueFamilyIndex;
+        if (requestedQueueCount >= 2) {
+            vkGetDeviceQueue(device, queueFamilyIndex, 1, &presentationQueue);
+            presentationQueueFamilyIndex = queueFamilyIndex;
+            LOGI("Frontend VkDevice created: %p, core queue: %p, dedicated present queue: %p", device, queue, presentationQueue);
+        } else {
+            presentationQueue = queue;
+            presentationQueueFamilyIndex = queueFamilyIndex;
+            LOGI("Frontend VkDevice created: %p, shared queue: %p", device, queue);
+        }
         coreCreatedDevice = false;
-        LOGI("Frontend VkDevice created: %p, queue: %p", device, queue);
     }
 
     // Initialize sync fences for synchronization
@@ -822,10 +1091,11 @@ void VulkanContext::setImage(
     const VkSemaphore* semaphores,
     uint32_t srcQueueFamily
 ) {
-    if (img != nullptr) {
+    if (img != nullptr && img->image_view != VK_NULL_HANDLE) {
         lastImage = *img;
         hasLastImage = true;
         currentImage = &lastImage;
+        newFrameAvailable = true;
     } else {
         currentImage = nullptr;
     }
@@ -906,6 +1176,7 @@ void VulkanContext::clearPerFrameState() {
     waitSemaphores.clear();
     coreCommandBuffers.clear();
     signalSemaphore = VK_NULL_HANDLE;
+    newFrameAvailable = false;
 }
 
 void VulkanContext::advanceSyncIndex() {

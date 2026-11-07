@@ -1,5 +1,6 @@
 #include "adpf.h"
 #include <dlfcn.h>
+#include <algorithm>
 #include "../log.h"
 
 namespace libretrodroid {
@@ -18,6 +19,7 @@ typedef int (*pfn_APerformanceHint_updateTargetWorkDuration)(
 typedef int (*pfn_APerformanceHint_reportActualWorkDuration)(
     APerformanceHintSession*, int64_t);
 typedef void (*pfn_APerformanceHint_closeSession)(APerformanceHintSession*);
+typedef int (*pfn_APerformanceHint_setThreads)(APerformanceHintSession*, const int32_t*, size_t);
 
 typedef AThermalManager* (*pfn_AThermal_acquireManager)();
 typedef void (*pfn_AThermal_releaseManager)(AThermalManager*);
@@ -28,6 +30,7 @@ static pfn_APerformanceHint_createSession s_createSession = nullptr;
 static pfn_APerformanceHint_updateTargetWorkDuration s_updateTarget = nullptr;
 static pfn_APerformanceHint_reportActualWorkDuration s_reportActual = nullptr;
 static pfn_APerformanceHint_closeSession s_closeSession = nullptr;
+static pfn_APerformanceHint_setThreads s_setThreads = nullptr;
 
 static pfn_AThermal_acquireManager s_acquireThermal = nullptr;
 static pfn_AThermal_releaseManager s_releaseThermal = nullptr;
@@ -68,10 +71,14 @@ void ADPFManager::init() {
     s_closeSession = reinterpret_cast<pfn_APerformanceHint_closeSession>(
         dlsym(RTLD_DEFAULT, "APerformanceHint_closeSession")
     );
+    s_setThreads = reinterpret_cast<pfn_APerformanceHint_setThreads>(
+        dlsym(RTLD_DEFAULT, "APerformanceHint_setThreads")
+    );
 
     if (s_getManager != nullptr && s_createSession != nullptr) {
         hintManager = s_getManager();
-        LOGI("ADPF Performance Hint Manager initialized: %p", hintManager);
+        LOGI("ADPF Performance Hint Manager initialized: %p (setThreads supported: %d)",
+             hintManager, s_setThreads != nullptr);
     } else {
         LOGI("ADPF Performance Hint APIs not available on this platform");
     }
@@ -96,6 +103,7 @@ void ADPFManager::init() {
 }
 
 void ADPFManager::startSession(pid_t threadId, int64_t targetDurationNanos) {
+    std::lock_guard<std::recursive_mutex> lock(adpfMutex);
     init();
     closeSession();
 
@@ -103,19 +111,105 @@ void ADPFManager::startSession(pid_t threadId, int64_t targetDurationNanos) {
         return;
     }
 
-    int32_t tid = static_cast<int32_t>(threadId);
+    registeredTids.clear();
+    if (threadId > 0) {
+        registeredTids.push_back(static_cast<int32_t>(threadId));
+    }
+
+    if (registeredTids.empty()) {
+        return;
+    }
+
     hintSession = s_createSession(
         static_cast<APerformanceHintManager*>(hintManager),
-        &tid,
-        1,
+        registeredTids.data(),
+        registeredTids.size(),
         targetDurationNanos
     );
     currentTargetNanos = targetDurationNanos;
-    LOGI("ADPF Performance Hint Session started for thread %d (target: %.2f ms, session: %p)",
-         tid, static_cast<double>(targetDurationNanos) / 1e6, hintSession);
+    LOGI("ADPF Performance Hint Session started for %zu thread(s) (target: %.2f ms, session: %p)",
+         registeredTids.size(), static_cast<double>(targetDurationNanos) / 1e6, hintSession);
+}
+
+void ADPFManager::registerThread(pid_t threadId) {
+    if (threadId <= 0) {
+        return;
+    }
+    std::lock_guard<std::recursive_mutex> lock(adpfMutex);
+    int32_t tid = static_cast<int32_t>(threadId);
+    if (std::find(registeredTids.begin(), registeredTids.end(), tid) != registeredTids.end()) {
+        return;
+    }
+    registeredTids.push_back(tid);
+    LOGI("ADPF registerThread: added tid %d (total registered: %zu)", tid, registeredTids.size());
+
+    if (hintSession != nullptr) {
+        if (s_setThreads != nullptr) {
+            int res = s_setThreads(
+                static_cast<APerformanceHintSession*>(hintSession),
+                registeredTids.data(),
+                registeredTids.size()
+            );
+            LOGI("ADPF APerformanceHint_setThreads returned: %d (threads: %zu)", res, registeredTids.size());
+        } else if (s_createSession != nullptr && hintManager != nullptr && currentTargetNanos > 0) {
+            if (s_closeSession != nullptr) {
+                s_closeSession(static_cast<APerformanceHintSession*>(hintSession));
+            }
+            hintSession = s_createSession(
+                static_cast<APerformanceHintManager*>(hintManager),
+                registeredTids.data(),
+                registeredTids.size(),
+                currentTargetNanos
+            );
+            LOGI("ADPF session recreated with %zu threads (session: %p)", registeredTids.size(), hintSession);
+        }
+    }
+}
+
+void ADPFManager::unregisterThread(pid_t threadId) {
+    if (threadId <= 0) {
+        return;
+    }
+    std::lock_guard<std::recursive_mutex> lock(adpfMutex);
+    int32_t tid = static_cast<int32_t>(threadId);
+    auto it = std::find(registeredTids.begin(), registeredTids.end(), tid);
+    if (it == registeredTids.end()) {
+        return;
+    }
+    registeredTids.erase(it);
+    LOGI("ADPF unregisterThread: removed tid %d (remaining: %zu)", tid, registeredTids.size());
+
+    if (registeredTids.empty()) {
+        if (hintSession != nullptr && s_closeSession != nullptr) {
+            s_closeSession(static_cast<APerformanceHintSession*>(hintSession));
+            hintSession = nullptr;
+        }
+        return;
+    }
+
+    if (hintSession != nullptr) {
+        if (s_setThreads != nullptr) {
+            s_setThreads(
+                static_cast<APerformanceHintSession*>(hintSession),
+                registeredTids.data(),
+                registeredTids.size()
+            );
+        } else if (s_createSession != nullptr && hintManager != nullptr && currentTargetNanos > 0) {
+            if (s_closeSession != nullptr) {
+                s_closeSession(static_cast<APerformanceHintSession*>(hintSession));
+            }
+            hintSession = s_createSession(
+                static_cast<APerformanceHintManager*>(hintManager),
+                registeredTids.data(),
+                registeredTids.size(),
+                currentTargetNanos
+            );
+        }
+    }
 }
 
 void ADPFManager::updateTargetDuration(int64_t targetDurationNanos) {
+    std::lock_guard<std::recursive_mutex> lock(adpfMutex);
     if (hintSession == nullptr || s_updateTarget == nullptr || targetDurationNanos <= 0) {
         return;
     }
@@ -126,6 +220,7 @@ void ADPFManager::updateTargetDuration(int64_t targetDurationNanos) {
 }
 
 void ADPFManager::reportActualDuration(int64_t actualDurationNanos) {
+    std::lock_guard<std::recursive_mutex> lock(adpfMutex);
     if (hintSession == nullptr || s_reportActual == nullptr || actualDurationNanos <= 0) {
         return;
     }
@@ -133,12 +228,14 @@ void ADPFManager::reportActualDuration(int64_t actualDurationNanos) {
 }
 
 void ADPFManager::closeSession() {
+    std::lock_guard<std::recursive_mutex> lock(adpfMutex);
     if (hintSession != nullptr) {
         if (s_closeSession != nullptr) {
             s_closeSession(static_cast<APerformanceHintSession*>(hintSession));
         }
         hintSession = nullptr;
     }
+    registeredTids.clear();
     currentTargetNanos = 0;
 }
 

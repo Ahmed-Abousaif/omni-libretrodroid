@@ -89,6 +89,7 @@ void VulkanRenderer::setAllowMailbox(bool allow) {
         return;
     }
     allowMailbox = allow;
+    isDirtyFlag = true;
     if (initialized) {
         needsRecreate = true;
     }
@@ -97,6 +98,7 @@ void VulkanRenderer::setAllowMailbox(bool allow) {
 void VulkanRenderer::setLinearFiltering(bool linear) {
     if (useLinearFiltering != linear) {
         useLinearFiltering = linear;
+        isDirtyFlag = true;
         LOGI("VulkanRenderer filtering updated to %s", linear ? "LINEAR" : "NEAREST");
     }
 }
@@ -409,6 +411,7 @@ void VulkanRenderer::updateScreenSize(uint32_t width, uint32_t height) {
         screenWidth = width;
         screenHeight = height;
         pushConstantsDirty = true;
+        isDirtyFlag = true;
     }
     if (initialized && (sizeChanged || surfaceMismatch())) {
         waitQueueIdleLocked();
@@ -421,18 +424,21 @@ void VulkanRenderer::updateAspectRatio(float aspectRatio) {
     if (aspectRatio > 0.0f && currentAspectRatio != aspectRatio) {
         currentAspectRatio = aspectRatio;
         pushConstantsDirty = true;
+        isDirtyFlag = true;
     }
 }
 
 void VulkanRenderer::updateViewport(Rect viewport) {
     currentViewport = viewport;
     pushConstantsDirty = true;
+    isDirtyFlag = true;
 }
 
 void VulkanRenderer::updateViewportAlignment(unsigned int alignment) {
     if (viewportAlignment != alignment) {
         viewportAlignment = alignment;
         pushConstantsDirty = true;
+        isDirtyFlag = true;
     }
 }
 
@@ -574,18 +580,39 @@ bool VulkanRenderer::createSwapchain() {
              pm == VK_PRESENT_MODE_FIFO_RELAXED_KHR ? "FIFO_RELAXED" : "OTHER");
     }
 
+    bool hasMailbox = false;
+    bool hasFifoRelaxed = false;
+    bool hasImmediate = false;
+    for (auto pm : presentModes) {
+        if (pm == VK_PRESENT_MODE_MAILBOX_KHR) hasMailbox = true;
+        if (pm == VK_PRESENT_MODE_FIFO_RELAXED_KHR) hasFifoRelaxed = true;
+        if (pm == VK_PRESENT_MODE_IMMEDIATE_KHR) hasImmediate = true;
+    }
+
     VkPresentModeKHR chosenPresentMode = VK_PRESENT_MODE_FIFO_KHR;
     if (allowMailbox) {
-        for (auto pm : presentModes) {
-            if (pm == VK_PRESENT_MODE_MAILBOX_KHR) {
-                chosenPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
-                break;
-            }
+        if (hasMailbox) {
+            chosenPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+        } else if (hasFifoRelaxed) {
+            chosenPresentMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+        } else if (hasImmediate) {
+            chosenPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        }
+    } else {
+        // Under standard pacing, FIFO_RELAXED prevents momentary frame-time variance
+        // from halving perceived framerate from 60 FPS down to 30 FPS.
+        if (hasFifoRelaxed) {
+            chosenPresentMode = VK_PRESENT_MODE_FIFO_RELAXED_KHR;
         }
     }
-    usingMailbox = chosenPresentMode == VK_PRESENT_MODE_MAILBOX_KHR;
+
+    usingMailbox = (chosenPresentMode == VK_PRESENT_MODE_MAILBOX_KHR);
     LOGI("Selected swapchain present mode: %d (%s, allowMailbox=%d)",
-         chosenPresentMode, usingMailbox ? "MAILBOX" : "FIFO", allowMailbox);
+         chosenPresentMode,
+         chosenPresentMode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX" :
+         chosenPresentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ? "FIFO_RELAXED" :
+         chosenPresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE" : "FIFO",
+         allowMailbox);
 
     sci.compositeAlpha = VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
     if (!(caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR)) {
@@ -1079,6 +1106,7 @@ void VulkanRenderer::recomputePushConstants() {
 }
 
 bool VulkanRenderer::renderFrame() {
+    isDirtyFlag = false;
     if (!initialized) {
         if (!initialize()) {
             return false;

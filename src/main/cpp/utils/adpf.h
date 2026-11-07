@@ -3,6 +3,8 @@
 
 #include <cstdint>
 #include <unistd.h>
+#include <vector>
+#include <mutex>
 
 namespace libretrodroid {
 
@@ -12,6 +14,8 @@ public:
 
     void init();
     void startSession(pid_t threadId, int64_t targetDurationNanos);
+    void registerThread(pid_t threadId);
+    void unregisterThread(pid_t threadId);
     void updateTargetDuration(int64_t targetDurationNanos);
     void reportActualDuration(int64_t actualDurationNanos);
     void closeSession();
@@ -31,6 +35,8 @@ private:
     void* thermalManager = nullptr;
     int64_t currentTargetNanos = 0;
     int lastReportedThermalStatus = 0;
+    std::vector<int32_t> registeredTids;
+    std::recursive_mutex adpfMutex;
 };
 
 } // namespace libretrodroid

@@ -31,6 +31,14 @@
 #include "vfs/vfs.h"
 #include "microphone/microphoneinterface.h"
 #include "vulkan/vulkancontext.h"
+#include "utils/adpf.h"
+
+#ifndef RETRO_ENVIRONMENT_REGISTER_WORKER_THREAD
+#define RETRO_ENVIRONMENT_REGISTER_WORKER_THREAD (RETRO_ENVIRONMENT_EXPERIMENTAL | 0x80)
+#endif
+#ifndef RETRO_ENVIRONMENT_UNREGISTER_WORKER_THREAD
+#define RETRO_ENVIRONMENT_UNREGISTER_WORKER_THREAD (RETRO_ENVIRONMENT_EXPERIMENTAL | 0x81)
+#endif
 
 void Environment::initialize(
     const std::string &requiredSystemDirectory,
@@ -620,6 +628,26 @@ bool Environment::handle_callback_environment(unsigned cmd, void *data) {
         case RETRO_ENVIRONMENT_GET_MICROPHONE_INTERFACE:
             LOGI("Called RETRO_ENVIRONMENT_GET_MICROPHONE_INTERFACE");
             return environment_handle_get_microphone_interface(static_cast<struct retro_microphone_interface*>(data));
+
+        case RETRO_ENVIRONMENT_REGISTER_WORKER_THREAD: {
+            LOGI("Called RETRO_ENVIRONMENT_REGISTER_WORKER_THREAD");
+            if (data) {
+                pid_t tid = *static_cast<const pid_t*>(data);
+                libretrodroid::ADPFManager::getInstance().registerThread(tid);
+                return true;
+            }
+            return false;
+        }
+
+        case RETRO_ENVIRONMENT_UNREGISTER_WORKER_THREAD: {
+            LOGI("Called RETRO_ENVIRONMENT_UNREGISTER_WORKER_THREAD");
+            if (data) {
+                pid_t tid = *static_cast<const pid_t*>(data);
+                libretrodroid::ADPFManager::getInstance().unregisterThread(tid);
+                return true;
+            }
+            return false;
+        }
 
         default:
             LOGI("Unhandled callback environment cmd: 0x%x (%u)", cmd, cmd);

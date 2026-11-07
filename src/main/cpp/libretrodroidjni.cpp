@@ -46,6 +46,7 @@
 #include "renderers/es2/imagerendereres2.h"
 #include "renderers/es3/imagerendereres3.h"
 #include "utils/jnistring.h"
+#include "utils/adpf.h"
 
 namespace libretrodroid {
 
@@ -712,6 +713,22 @@ JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_onTrimMemo
     jint level
 ) {
     LibretroDroid::getInstance().onTrimMemory(level);
+}
+
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_registerWorkerThread(
+    JNIEnv* env,
+    jclass obj,
+    jint threadId
+) {
+    ADPFManager::getInstance().registerThread(threadId);
+}
+
+JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_unregisterWorkerThread(
+    JNIEnv* env,
+    jclass obj,
+    jint threadId
+) {
+    ADPFManager::getInstance().unregisterThread(threadId);
 }
 
 }

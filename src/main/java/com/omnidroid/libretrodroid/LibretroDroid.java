@@ -156,5 +156,8 @@ public class LibretroDroid {
     public static native double[] getProfilingStats();
 
     public static native void onTrimMemory(int level);
+
+    public static native void registerWorkerThread(int threadId);
+    public static native void unregisterWorkerThread(int threadId);
 }
 

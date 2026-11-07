@@ -96,6 +96,10 @@ public:
     bool isContextResetCalled() const { return contextResetCalled; }
     void setContextResetCalled(bool called) { contextResetCalled = called; }
 
+    bool hasNewFrame() const { return newFrameAvailable; }
+    void markNewFrame() { newFrameAvailable = true; }
+    void consumeNewFrame() { newFrameAvailable = false; }
+
     // Memory and Budget tracking (Phase 6)
     void logMemoryProperties();
     void logMemoryBudget();
@@ -133,11 +137,13 @@ private:
     VkDevice device = VK_NULL_HANDLE;
     VkQueue queue = VK_NULL_HANDLE;
     uint32_t queueFamilyIndex = 0;
+    uint32_t maxQueueCount = 1;
     VkQueue presentationQueue = VK_NULL_HANDLE;
     uint32_t presentationQueueFamilyIndex = 0;
     float targetFps = 0.0f;
     bool memoryBudgetSupported = false;
     bool isUma = false;
+    bool newFrameAvailable = false;
 
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     ANativeWindow* nativeWindow = nullptr;

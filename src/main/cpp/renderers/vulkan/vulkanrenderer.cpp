@@ -1268,6 +1268,14 @@ bool VulkanRenderer::renderFrame() {
     }
 
     const struct retro_vulkan_image* currentImage = VulkanContext::getInstance().getCurrentImage();
+    static uint32_t s_renderLogCount = 0;
+    if (s_renderLogCount++ % 60 == 0) {
+        LOGI("VulkanRenderer::renderFrame [frame %u]: currentImage=%p, view=%p, swapchainExtent=%ux%u",
+             s_renderLogCount,
+             currentImage,
+             currentImage ? (void*)(uintptr_t)currentImage->image_view : nullptr,
+             swapchainExtent.width, swapchainExtent.height);
+    }
     VkSampler activeSampler = useLinearFiltering ? samplerLinear : samplerNearest;
     VkImageLayout targetLayout = (currentImage != nullptr && currentImage->image_layout != VK_IMAGE_LAYOUT_UNDEFINED)
                                  ? currentImage->image_layout
@@ -1816,10 +1824,12 @@ void VulkanRenderer::requestRenderAsync() {
 
     {
         std::unique_lock<std::mutex> lock(asyncMutex);
-        // Wait for prior frame presentation to finish so we do not overwrite or race on per-frame buffers
-        asyncDoneCv.wait(lock, [this]() {
+        // Wait for prior frame presentation to finish with timeout so presentation never permanently hangs emulation
+        if (!asyncDoneCv.wait_for(lock, std::chrono::milliseconds(33), [this]() {
             return !asyncFrameInFlight.load() && !asyncFramePending.load();
-        });
+        })) {
+            LOGW("VulkanRenderer::requestRenderAsync timeout waiting for prior presentation");
+        }
 
         asyncFramePending = true;
         asyncCv.notify_one();
@@ -1829,9 +1839,11 @@ void VulkanRenderer::requestRenderAsync() {
 void VulkanRenderer::flushAsync() {
     if (!asyncWorkerRunning) return;
     std::unique_lock<std::mutex> lock(asyncMutex);
-    asyncDoneCv.wait(lock, [this]() {
+    if (!asyncDoneCv.wait_for(lock, std::chrono::milliseconds(50), [this]() {
         return !asyncFrameInFlight.load() && !asyncFramePending.load();
-    });
+    })) {
+        LOGW("VulkanRenderer::flushAsync timeout waiting for presentation worker");
+    }
 }
 
 } // namespace libretrodroid

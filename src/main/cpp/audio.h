@@ -34,12 +34,12 @@ namespace libretrodroid {
 class Audio: public oboe::AudioStreamDataCallback, oboe::AudioStreamErrorCallback {
 private:
     struct AudioLatencySettings {
-        unsigned bufferSizeInVideoFrames;
+        float bufferSizeInVideoFrames;
         bool useLowLatencyStream;
     };
 
-    const AudioLatencySettings DEFAULT_LATENCY_SETTINGS { 10, false };
-    const AudioLatencySettings LOW_LATENCY_SETTINGS { 6, true };
+    const AudioLatencySettings DEFAULT_LATENCY_SETTINGS { 8.0f, false };
+    const AudioLatencySettings LOW_LATENCY_SETTINGS { 4.5f, true };
 
 public:
     Audio(int32_t sampleRate, double refreshRate, bool preferLowLatencyAudio);

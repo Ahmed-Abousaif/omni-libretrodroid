@@ -761,6 +761,11 @@ void LibretroDroid::handleVideoRefresh(
     unsigned int height,
     size_t pitch
 ) {
+    static uint32_t s_refreshLogCount = 0;
+    if (s_refreshLogCount++ % 60 == 0) {
+        LOGI("handleVideoRefresh [frame %u]: data=%p, %ux%u, pitch=%zu",
+             s_refreshLogCount, data, width, height, pitch);
+    }
     if (vulkanRenderer && data != nullptr) {
         VulkanContext::getInstance().markNewFrame();
     }

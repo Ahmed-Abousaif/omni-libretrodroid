@@ -1239,6 +1239,15 @@ void VulkanContext::setImage(
     const VkSemaphore* semaphores,
     uint32_t srcQueueFamily
 ) {
+    static uint32_t s_setImageCount = 0;
+    if (s_setImageCount++ % 60 == 0) {
+        LOGI("VulkanContext::setImage [frame %u]: img=%p, view=%p, layout=%d, semaphores=%u",
+             s_setImageCount,
+             img,
+             img ? (void*)(uintptr_t)img->image_view : nullptr,
+             img ? img->image_layout : -1,
+             numSemaphores);
+    }
     if (img != nullptr && img->image_view != VK_NULL_HANDLE) {
         lastImage = *img;
         hasLastImage = true;

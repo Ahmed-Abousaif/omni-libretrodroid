@@ -45,9 +45,12 @@ bool Audio::initializeStream() {
     builder.setFormat(oboe::AudioFormat::I16);
     builder.setDataCallback(this);
     builder.setErrorCallback(this);
+    builder.setUsage(oboe::Usage::Game);
+    builder.setContentType(oboe::ContentType::Sonification);
 
     if (audioLatencySettings->useLowLatencyStream) {
         builder.setPerformanceMode(oboe::PerformanceMode::LowLatency);
+        builder.setSharingMode(oboe::SharingMode::Shared);
     } else {
         builder.setFramesPerCallback(audioBufferSize / 10);
     }
@@ -92,11 +95,11 @@ int32_t Audio::computeAudioBufferSize() {
 }
 
 double Audio::computeMaximumLatency() const {
-    // Stretching needs lookahead, so the fifo is at least the 10-frame buffer
-    // even when the stream itself is opened in low-latency mode.
-    unsigned videoFrames = std::max(audioLatencySettings->bufferSizeInVideoFrames, 10u);
-    double maxLatency = (videoFrames / contentRefreshRate) * 1000;
-    return std::max(maxLatency, 48.0);
+    const float minFrames = audioLatencySettings->useLowLatencyStream ? 4.0f : 8.0f;
+    const float videoFrames = std::max(audioLatencySettings->bufferSizeInVideoFrames, minFrames);
+    const double maxLatency = (videoFrames / contentRefreshRate) * 1000.0;
+    const double floorLatency = audioLatencySettings->useLowLatencyStream ? 24.0 : 48.0;
+    return std::max(maxLatency, floorLatency);
 }
 
 void Audio::start() {

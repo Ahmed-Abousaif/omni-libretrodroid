@@ -32,6 +32,7 @@
 #include "microphone/microphoneinterface.h"
 #include "vulkan/vulkancontext.h"
 #include "utils/adpf.h"
+#include "textinput/textinput.h"
 
 #ifndef RETRO_ENVIRONMENT_REGISTER_WORKER_THREAD
 #define RETRO_ENVIRONMENT_REGISTER_WORKER_THREAD (RETRO_ENVIRONMENT_EXPERIMENTAL | 0x80)
@@ -51,6 +52,7 @@ void Environment::initialize(
 }
 
 void Environment::deinitialize() {
+    TextInput::instance().reset();
     callback_get_current_framebuffer = nullptr;
     hw_context_reset = nullptr;
     hw_context_destroy = nullptr;
@@ -250,6 +252,14 @@ bool Environment::callback_environment(unsigned cmd, void *data) {
 
 bool Environment::handle_callback_environment(unsigned cmd, void *data) {
     switch (cmd) {
+        case OMNI_ENVIRONMENT_GET_TEXT_INPUT_INTERFACE: {
+            auto* iface = static_cast<omni_text_input_interface*>(data);
+            if (!iface || iface->version != OMNI_TEXT_INPUT_VERSION) return false;
+            iface->show = &TextInput::show;
+            iface->hide = &TextInput::hide;
+            iface->poll = &TextInput::poll;
+            return true;
+        }
         case RETRO_ENVIRONMENT_GET_CAN_DUPE:
             LOGI("Called RETRO_ENVIRONMENT_GET_CAN_DUPE");
             if (data) *((bool*) data) = true;

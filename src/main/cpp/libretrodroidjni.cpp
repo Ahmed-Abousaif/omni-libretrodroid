@@ -42,6 +42,34 @@
 #include "utils/javautils.h"
 #include "errorcodes.h"
 #include "environment.h"
+#include "textinput/textinput.h"
+
+extern "C" JNIEXPORT jobject JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_getTextInputRequest(
+    JNIEnv* env, jclass) {
+    auto request = TextInput::instance().getRequest();
+    if (!request) return nullptr;
+    jclass type = env->FindClass("com/omnidroid/libretrodroid/TextInputRequest");
+    if (!type) return nullptr;
+    jmethodID constructor = env->GetMethodID(type, "<init>", "(JLjava/lang/String;I)V");
+    if (!constructor) return nullptr;
+    jstring text = env->NewString(reinterpret_cast<const jchar*>(request->text.data()), request->text.size());
+    jobject result = env->NewObject(type, constructor, jlong(request->session), text, jint(request->maxLength));
+    env->DeleteLocalRef(text);
+    env->DeleteLocalRef(type);
+    return result;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_updateTextInput(
+    JNIEnv* env, jclass, jlong session, jstring text, jboolean confirmed) {
+    if (!text) return false;
+    const jchar* chars = env->GetStringChars(text, nullptr);
+    if (!chars) return false;
+    std::u16string value;
+    const jsize length = env->GetStringLength(text);
+    for (jsize i = 0; i < length; ++i) value.push_back(chars[i]);
+    env->ReleaseStringChars(text, chars);
+    return TextInput::instance().update(uint64_t(session), std::move(value), confirmed);
+}
 #include "renderers/es3/framebufferrenderer.h"
 #include "renderers/es2/imagerendereres2.h"
 #include "renderers/es3/imagerendereres3.h"

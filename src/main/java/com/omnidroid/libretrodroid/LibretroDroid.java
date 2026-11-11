@@ -21,6 +21,9 @@ import java.util.List;
 
 public class LibretroDroid {
 
+    public static native TextInputRequest getTextInputRequest();
+    public static native boolean updateTextInput(long session, String text, boolean confirmed);
+
     static {
         System.loadLibrary("libretrodroid");
     }

@@ -3,6 +3,8 @@ plugins {
     id("kotlin-android")
 }
 
+version = file("VERSION").readText().trim()
+
 android {
     namespace = "com.omnidroid.libretrodroid"
 

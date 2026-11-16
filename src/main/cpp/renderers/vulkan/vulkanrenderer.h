@@ -234,11 +234,6 @@ private:
     VkSampler samplerNearest = VK_NULL_HANDLE;
     bool useLinearFiltering = true;
 
-    // Descriptor set update caching (avoids redundant vkUpdateDescriptorSets every frame)
-    VkImageView lastBoundImageView[3] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
-    VkSampler lastBoundSampler[3] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
-    VkImageLayout lastBoundImageLayout[3] = { VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_UNDEFINED };
-
     // Matches VulkanContext::MAX_SYNC_INDEX.
     static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 3;
 

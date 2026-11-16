@@ -607,6 +607,10 @@ JNIEXPORT void JNICALL Java_com_omnidroid_libretrodroid_LibretroDroid_step(
             jclass cls = env->GetObjectClass(glRetroView);
             jmethodID requestAspectRatioUpdate = env->GetMethodID(cls, "refreshAspectRatio", "()V");
             env->CallVoidMethod(glRetroView, requestAspectRatioUpdate);
+        } else {
+            // Vulkan frontends step without a GL view. Consume geometry notifications on
+            // the same emulation thread instead of dropping them or polling after options.
+            LibretroDroid::getInstance().refreshAspectRatio();
         }
     }
 

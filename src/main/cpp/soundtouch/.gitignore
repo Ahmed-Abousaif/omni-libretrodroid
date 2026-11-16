@@ -53,3 +53,7 @@ build*
 CMakeFiles
 CMakeCache.txt
 *.cmake
+
+# Source templates required when configuring the vendored library from a clean clone.
+!soundtouch.pc.in
+!SoundTouchConfig.cmake.in

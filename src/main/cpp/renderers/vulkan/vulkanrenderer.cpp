@@ -301,20 +301,6 @@ void VulkanRenderer::onTrimMemory(int level) {
     // Save pipeline cache on memory pressure or when UI is hidden
     savePipelineCache();
 
-    // Android ComponentCallbacks2 levels:
-    // TRIM_MEMORY_RUNNING_LOW (10), TRIM_MEMORY_RUNNING_CRITICAL (15),
-    // TRIM_MEMORY_UI_HIDDEN (20), TRIM_MEMORY_BACKGROUND (40),
-    // TRIM_MEMORY_MODERATE (60), TRIM_MEMORY_COMPLETE (80)
-    if (level >= 10) {
-        // Reset cached descriptor bindings so stale image views / samplers are released
-        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-            lastBoundImageView[i] = VK_NULL_HANDLE;
-            lastBoundSampler[i] = VK_NULL_HANDLE;
-            lastBoundImageLayout[i] = VK_IMAGE_LAYOUT_UNDEFINED;
-        }
-        LOGI("VulkanRenderer descriptor binding cache cleared on trim memory level %d", level);
-    }
-
     if (level >= 80 /* TRIM_MEMORY_COMPLETE */) {
         waitQueueIdleLocked();
     }
@@ -399,11 +385,6 @@ void VulkanRenderer::deinitialize() {
             samplerNearest = VK_NULL_HANDLE;
         }
 
-        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-            lastBoundImageView[i] = VK_NULL_HANDLE;
-            lastBoundSampler[i] = VK_NULL_HANDLE;
-            lastBoundImageLayout[i] = VK_IMAGE_LAYOUT_UNDEFINED;
-        }
 
         if (descriptorPool != VK_NULL_HANDLE) {
             vkDestroyDescriptorPool(device, descriptorPool, nullptr);
@@ -770,11 +751,6 @@ void VulkanRenderer::destroySwapchain() {
             swapchain = VK_NULL_HANDLE;
         }
 
-        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-            lastBoundImageView[i] = VK_NULL_HANDLE;
-            lastBoundSampler[i] = VK_NULL_HANDLE;
-            lastBoundImageLayout[i] = VK_IMAGE_LAYOUT_UNDEFINED;
-        }
     }
 }
 
@@ -1282,31 +1258,24 @@ bool VulkanRenderer::renderFrame() {
                                  : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     if (currentImage != nullptr && currentImage->image_view != VK_NULL_HANDLE) {
-        // Fallback descriptor set update when VK_KHR_push_descriptor is not available
+        // A core can destroy and recreate a view with the same numeric handle. Handle
+        // equality says nothing about its lifetime, so rewrite the descriptor after this
+        // frame slot's fence has completed. Push descriptors already bind each draw.
         if (!pushDescriptorSupported || pfnCmdPushDescriptorSetKHR == nullptr) {
-            if (lastBoundImageView[currentFrame] != currentImage->image_view ||
-                lastBoundSampler[currentFrame] != activeSampler ||
-                lastBoundImageLayout[currentFrame] != targetLayout) {
+            VkDescriptorImageInfo imageInfo {};
+            imageInfo.sampler = activeSampler;
+            imageInfo.imageView = currentImage->image_view;
+            imageInfo.imageLayout = targetLayout;
 
-                VkDescriptorImageInfo imageInfo {};
-                imageInfo.sampler = activeSampler;
-                imageInfo.imageView = currentImage->image_view;
-                imageInfo.imageLayout = targetLayout;
+            VkWriteDescriptorSet write {};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = descriptorSets[currentFrame];
+            write.dstBinding = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &imageInfo;
 
-                VkWriteDescriptorSet write {};
-                write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                write.dstSet = descriptorSets[currentFrame];
-                write.dstBinding = 0;
-                write.descriptorCount = 1;
-                write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                write.pImageInfo = &imageInfo;
-
-                vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
-
-                lastBoundImageView[currentFrame] = currentImage->image_view;
-                lastBoundSampler[currentFrame] = activeSampler;
-                lastBoundImageLayout[currentFrame] = targetLayout;
-            }
+            vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
         }
     }
 

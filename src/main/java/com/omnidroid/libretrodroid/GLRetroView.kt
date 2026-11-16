@@ -222,8 +222,10 @@ class GLRetroView(
     }
 
     fun updateVariables(vararg variables: Variable) {
-        variables.forEach {
-            LibretroDroid.updateVariable(it)
+        // Keep related options in one emulation-thread action between retro_run calls.
+        val batch = variables.copyOf()
+        queueEvent {
+            batch.forEach { LibretroDroid.updateVariable(it) }
         }
     }
 
